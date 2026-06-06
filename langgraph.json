@@ -1,0 +1,8 @@
+{
+  "node_version": "20",
+  "graphs": {
+    "War Research": "./src/agent.ts:warResearchGraph"
+  },
+  "env": "./.env",
+  "dependencies": ["."]
+}

@@ -1,5 +1,6 @@
 node_modules/
 .claude/
 dist/
+.langgraph_api/
 .env
 plan.md

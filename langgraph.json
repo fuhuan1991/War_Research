@@ -1,7 +1,7 @@
 {
   "node_version": "20",
   "graphs": {
-    "War Research": "./src/agent.ts:warResearchGraph"
+    "conversationAgent": "./src/conversationAgent.ts:conversationGraph"
   },
   "env": "./.env",
   "dependencies": ["."]

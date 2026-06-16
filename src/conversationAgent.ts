@@ -4,7 +4,7 @@ import { AIMessage, HumanMessage, SystemMessage, getBufferString } from "@langch
 import { z } from "zod";
 import { ChatOpenAI } from "@langchain/openai";
 
-import { ConversationState } from "./states/conversationState.js";
+import { ConversationState, ConversationStateType } from "./states/conversationState.js";
 import { clarificationPrompt, clarificationSystemPrompt } from "./prompts/clarificationPrompt.js";
 import { briefingPrompt } from "./prompts/briefingPrompt.js";
 import { supervisorAgent } from "./supervisorAgent.js";
@@ -51,7 +51,7 @@ export type BriefingModel = {
 };
 
 export const makeClarificationNode = (llm: ClarificationModel) =>
-  async (state: typeof ConversationState.State) => {
+  async (state: ConversationStateType) => {
 
     const prompt = clarificationPrompt
       .replace("{messages}", getBufferString(state.messages))
@@ -89,7 +89,7 @@ export const makeClarificationNode = (llm: ClarificationModel) =>
 };
 
 export const makeBriefingNode = (llm: BriefingModel) =>
-  async (state: typeof ConversationState.State) => {
+  async (state: ConversationStateType) => {
     const prompt = briefingPrompt
       .replace("{messages}", getBufferString(state.messages))
       .replace("{date}", new Date().toDateString());
@@ -104,7 +104,7 @@ export const makeBriefingNode = (llm: BriefingModel) =>
 };
 
 export const makeReportGenerator = (llm: BriefingModel) =>
-  async (state: typeof ConversationState.State) => {
+  async (state: ConversationStateType) => {
     // TODO: implement reportGenerator logic
     return {};
 };

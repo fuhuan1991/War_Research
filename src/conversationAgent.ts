@@ -2,17 +2,11 @@ import "dotenv/config";
 import { StateGraph, START, END, Command, MemorySaver } from "@langchain/langgraph";
 import { AIMessage, HumanMessage, SystemMessage, getBufferString } from "@langchain/core/messages";
 import { z } from "zod";
-import { ChatOpenAI } from "@langchain/openai";
-
 import { ConversationState, ConversationStateType } from "./states/conversationState.js";
 import { clarificationPrompt, clarificationSystemPrompt } from "./prompts/clarificationPrompt.js";
 import { briefingPrompt } from "./prompts/briefingPrompt.js";
 import { supervisorAgent } from "./supervisorAgent.js";
-
-export const model = new ChatOpenAI({
-  model: "gpt-4.1",
-  temperature: 0,
-});
+import { fullModel, miniModel, nanoModel } from "./model.js";
 
 export const ClarificationOutput = z.object({
   related: z.boolean().describe(
@@ -109,9 +103,9 @@ export const makeReportGenerator = (llm: BriefingModel) =>
     return {};
 };
 
-const briefingNode = makeBriefingNode(model);
-const clarificationNode = makeClarificationNode(model);
-const reportGenerator = makeReportGenerator(model);
+const clarificationNode = makeClarificationNode(nanoModel);
+const briefingNode = makeBriefingNode(miniModel);
+const reportGenerator = makeReportGenerator(fullModel);
 
 // TODO: Before deploying to production, replace MemorySaver with a persistent
 // database-backed checkpointer (e.g. PostgreSQL or MongoDB) and add a cleanup

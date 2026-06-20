@@ -5,7 +5,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 
 import { SupervisorState, SupervisorStateType } from "./states/supervisorState.js";
-import { model } from "./model.js";
+import { fullModel, nanoModel } from "./model.js";
 import { supervisorAssessmentPrompt } from "./prompts/supervisorAssessmentPrompt.js";
 import { supervisorDispatchingPrompt } from "./prompts/supervisorDispatchingPrompt.js";
 import { researchAgent } from "./researchAgent.js";
@@ -33,7 +33,7 @@ const CompleteResearch = tool(
   }
 );
 
-const dispatchingModel = model.bindTools([ConductResearch, CompleteResearch], { tool_choice: "required" });
+const dispatchingModel = nanoModel.bindTools([ConductResearch, CompleteResearch], { tool_choice: "required" });
 
 // Maximum number of research iterations before forcing CompleteResearch
 const max_supervisor_turns = 5;
@@ -48,7 +48,7 @@ export const makeSupervisorNode = () =>
     const supervisorMessages = state.supervisor_messages;
 
     // Assess current situation 
-    const assessmentResponse: AIMessage = await model.invoke([
+    const assessmentResponse: AIMessage = await fullModel.invoke([
       new SystemMessage(supervisorAssessmentPrompt),
       ...supervisorMessages,
     ]) as AIMessage;

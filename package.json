@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "dev": "npx @langchain/langgraph-cli dev"
+    "dev": "npx @langchain/langgraph-cli dev",
+    "test": "vitest run tests/unit",
+    "llm-test": "vitest run tests/eval"
   },
   "dependencies": {
     "@langchain/core": "^1.1.48",
-    "@langchain/langgraph": "^1.3.6",
+    "@langchain/langgraph": "^1.3.7",
     "@langchain/openai": "^1.4.7",
     "@tavily/core": "^0.7.5",
     "dotenv": "^16.0.0",

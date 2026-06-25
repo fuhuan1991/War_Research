@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { SupervisorState, SupervisorStateType } from "./states/supervisorState.js";
 import { fullModel, nanoModel } from "./model.js";
+import { MAX_SUPERVISOR_TURNS, MAX_CONCURRENT_RESEARCH_UNITS } from "./config.js";
 import { supervisorAssessmentPrompt } from "./prompts/supervisorAssessmentPrompt.js";
 import { supervisorDispatchingPrompt } from "./prompts/supervisorDispatchingPrompt.js";
 import { researchAgent } from "./researchAgent.js";
@@ -35,11 +36,6 @@ const CompleteResearch = tool(
 
 const dispatchingModel = nanoModel.bindTools([ConductResearch, CompleteResearch], { tool_choice: "required" });
 
-// Maximum number of research iterations before forcing CompleteResearch
-const max_supervisor_turns = 5;
-
-// Maximum number of concurrent research agents the supervisor can launch
-const max_concurrent_research_units = 3;
 
 // ============================================================ NODES ============================================================
 
@@ -55,7 +51,7 @@ export const makeSupervisorNode = () =>
 
     // Dispatch research task or stop research
     const decisionResponse: AIMessage = await dispatchingModel.invoke([
-      new SystemMessage(supervisorDispatchingPrompt(max_supervisor_turns, max_concurrent_research_units)),
+      new SystemMessage(supervisorDispatchingPrompt(MAX_SUPERVISOR_TURNS, MAX_CONCURRENT_RESEARCH_UNITS)),
       ...supervisorMessages,
       assessmentResponse,
     ]) as AIMessage;
@@ -82,7 +78,7 @@ export const makeSupervisorToolNode = () =>
     const toolCalls = lastMessage.tool_calls ?? [];
 
     const isComplete = toolCalls.some((tc) => tc.name === "CompleteResearch");
-    const iterationLimitReached = state.research_iterations > max_supervisor_turns;
+    const iterationLimitReached = state.research_iterations > MAX_SUPERVISOR_TURNS;
 
     if (isComplete || iterationLimitReached) {
       const toolMessages: ToolMessage[] = toolCalls.map((tc) =>
@@ -109,6 +105,7 @@ export const makeSupervisorToolNode = () =>
         researchAgent.invoke({ 
           research_topic: tc.args.researchTopic,
           researcher_messages: [ new HumanMessage(tc.args.researchTopic) ],
+          research_iterations: 0,
         })
       )
     );

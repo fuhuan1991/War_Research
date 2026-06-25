@@ -1,0 +1,7 @@
+export const TAVILY_MAX_RESULTS = 4;
+
+export const MAX_SUPERVISOR_TURNS = 5;
+export const MAX_CONCURRENT_RESEARCH_UNITS = 3;
+
+export const MAX_RESEARCHER_TURNS = 5;
+export const MAX_CONCURRENT_TAVILY_SEARCHES = 4;

@@ -5,8 +5,9 @@ import { z } from "zod";
 import { ConversationState, ConversationStateType } from "./states/conversationState.js";
 import { clarificationPrompt, clarificationSystemPrompt } from "./prompts/clarificationPrompt.js";
 import { briefingPrompt } from "./prompts/briefingPrompt.js";
+import { reportGeneratorPrompt } from "./prompts/reportGeneratorPrompt.js";
 import { supervisorAgent } from "./supervisorAgent.js";
-import { fullModel, miniModel, nanoModel } from "./model.js";
+import { fullModel, miniModel } from "./model.js";
 
 export const ClarificationOutput = z.object({
   related: z.boolean().describe(
@@ -97,13 +98,24 @@ export const makeBriefingNode = (llm: BriefingModel) =>
     };
 };
 
-export const makeReportGenerator = (llm: BriefingModel) =>
+export const makeReportGenerator = (llm: { invoke: (messages: HumanMessage[]) => Promise<AIMessage> }) =>
   async (state: ConversationStateType) => {
-    // TODO: implement reportGenerator logic
-    return {};
-};
+    const findings = state.notes.join("\n");
 
-const clarificationNode = makeClarificationNode(nanoModel);
+    const prompt = reportGeneratorPrompt
+      .replace("{research_brief}", state.research_brief)
+      .replace("{findings}", findings)
+      .replace("{date}", new Date().toDateString());
+
+    const response = await llm.invoke([new HumanMessage(prompt)]) as AIMessage;
+
+    return {
+      final_report: response.content as string,
+      messages: [new AIMessage("Here is the final report:\n\n" + response.content)],
+    };
+  };
+
+const clarificationNode = makeClarificationNode(fullModel);
 const briefingNode = makeBriefingNode(miniModel);
 const reportGenerator = makeReportGenerator(fullModel);
 

@@ -2,9 +2,10 @@ import "dotenv/config";
 import { describe, it, expect } from "vitest";
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import { END } from "@langchain/langgraph";
-import { model, makeClarificationNode } from "../../src/conversationAgent.js";
+import { makeClarificationNode } from "../../src/conversationAgent.js";
+import { fullModel } from "../../src/model.js";
 
-const node = makeClarificationNode(model);
+const node = makeClarificationNode(fullModel);
 
 const makeState = (...messages: (HumanMessage | AIMessage)[]) => ({ messages });
 

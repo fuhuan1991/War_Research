@@ -4,21 +4,7 @@ Living backlog of action items for the War Research project. Add items here as t
 
 ## Open
 
-- [ ] **Collaborative scoping: shape the `research_brief` with the user.** Today `clarification_node` is effectively a classifier — reject / ask at most one question / pass — and `briefing_node` then derives `research_brief` silently, so the user never sees what will actually be researched. Goal: a short guided dialogue (a few related questions) that helps the user discover what they actually want to know, with the brief as the shared output.
-
-  Agreed design decisions:
-  - **Questions must come with options.** "What aspect of WWII interests you?" hands the problem back to a user who doesn't know. Offer a menu ("Eastern Front / Pacific theater / home front / codebreaking") — supplying the options *is* the value.
-  - **Cap the turns explicitly.** Add a `MAX_SCOPING_TURNS` (~2–3) to `src/config.ts`, matching the existing `MAX_SUPERVISOR_TURNS` / `MAX_RESEARCHER_TURNS` budget idiom.
-  - **Always leave an exit.** "Just research it" / "you pick" short-circuits straight to the brief, so expert users who already know what they want aren't forced through an interview.
-  - **Show the brief at the end.** Surface the final brief for confirmation before the expensive research phase starts. Without this the user hasn't co-shaped anything — they answered questions and hoped.
-
-  Likely mechanism: LangGraph's `interrupt()` (confirmed available in the installed `@langchain/langgraph` 1.3.7) instead of the current end-the-graph-and-resume-from-START approach. `interrupt()` pauses mid-node and resumes via `Command({ resume })`, so scoping state can live in explicit state fields rather than being re-inferred from message history every turn — which is why `clarificationPrompt.ts` currently needs its "if you already asked, don't ask again" guards. The existing checkpointer (`conversationAgent.ts:126`) is the prerequisite and is already in place; LangGraph Studio has first-class interrupt/resume UI.
-
-  Open questions (defer to implementation discussion):
-  - Split the cheap reject gate and the scoping dialogue into separate nodes, or keep them in one? (Current `clarificationPrompt.ts` is 78 lines doing three jobs: relevance, ambiguity, focus.)
-  - When the question is already specific ("what were the turning points at Stalingrad?"), should scoping ask anything at all, or pass straight through as it does today?
-
-  Note: this does **not** fix the bullet-list problem — shaping the brief shapes *what* is researched, not how the report is structured. Tracked separately below.
+- [ ] **Collaborative scoping** TBD
 
 - [ ] **Output quality: prose over bullet lists.** Final reports currently read as large bullet lists; expectation is a few paragraphs / short-article style. `reportGeneratorPrompt` (`src/prompts/reportGeneratorPrompt.ts`) already says "write in paragraph form" but the report is likely inheriting bullet-heavy style from the researcher's `compressed_research` notes feeding into it — needs investigation into both `researcherCompressionPrompt.ts` and `reportGeneratorPrompt.ts`.
 - [ ] **Output should include images.** No image capability exists anywhere in the pipeline today — Tavily search is text-only (`src/tools/tavilySearch.ts`), and no prompt references embedding images. Needs a design decision: image search API (Tavily supports `includeImages`), how images get carried through `raw_notes`/`notes` state, and how the final report embeds them (markdown `![]()` with source URLs vs. downloading/storing).

@@ -1,6 +1,6 @@
-export const readyOrNotSystemPrompt = `You are a war research agent. Your sole purpose is to research real, battlefield wars — historical or modern.`;
+export const scopeTopicSystemPrompt = `You are a war research agent. Your sole purpose is to research real, battlefield wars — historical or modern.`;
 
-export const readyOrNotPrompt = `
+export const scopeTopicPrompt = `
 These are the messages that have been exchanged so far with the user:
 <Messages>
 {messages}

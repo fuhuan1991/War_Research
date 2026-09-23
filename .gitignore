@@ -3,4 +3,5 @@ node_modules/
 dist/
 .langgraph_api/
 .env
+.env.example
 plan.md

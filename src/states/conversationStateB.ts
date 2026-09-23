@@ -4,7 +4,7 @@ import { ConversationState } from "./conversationState.js";
 
 /**
  * The concrete research plan shown to the user for confirmation.
- * `final_topic` is the sharpened version of the negotiated `topic`;
+ * `final_topic` is the sharpened version of the negotiated `rough_topic`;
  * `angles` are the sub-questions that will eventually become one
  * ConductResearch call each (see MAX_CONCURRENT_RESEARCH_UNITS).
  */
@@ -26,14 +26,14 @@ export type PlanType = z.infer<typeof PlanSchema>;
  * `state.confirm_rounds + 1` evaluate to NaN.
  */
 export const ConversationStateB = ConversationState.extend({
-  // Set by ready_or_not once a workable topic and a clear intent to start are both present.
-  ready: withLangGraph(z.boolean(), { default: () => false }),
+  // Set by scope_topic once a workable topic and a clear intent to start are both present.
+  ready_to_plan: withLangGraph(z.boolean(), { default: () => false }),
 
   // The rough topic the user has agreed to. Stable anchor across plan revisions:
   // angle-level feedback leaves it alone, topic-level feedback clears it.
-  topic: withLangGraph(z.string(), { default: () => "" }),
+  rough_topic: withLangGraph(z.string(), { default: () => "" }),
 
-  // The suggestive nudge written by ready_or_not and surfaced by ask_user's interrupt.
+  // The suggestive nudge written by scope_topic and surfaced by ask_user's interrupt.
   pending_question: withLangGraph(z.string(), { default: () => "" }),
 
   // Written by propose_plan BEFORE confirm_plan pauses — confirm_plan re-executes from
@@ -46,7 +46,7 @@ export const ConversationStateB = ConversationState.extend({
   // Rejected-plan counter, checked against MAX_CONFIRM_ROUNDS in propose_plan.
   confirm_rounds: withLangGraph(z.number(), { default: () => 0 }),
 
-  // Not-ready counter, checked against MAX_CLARIFY_ROUNDS in ready_or_not.
+  // Not-ready counter, checked against MAX_CLARIFY_ROUNDS in scope_topic.
   clarify_rounds: withLangGraph(z.number(), { default: () => 0 }),
 });
 

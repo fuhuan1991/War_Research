@@ -4,7 +4,7 @@ import { AIMessage, HumanMessage, SystemMessage, getBufferString } from "@langch
 import { z } from "zod";
 
 import { ConversationStateB, ConversationStateBType, PlanType } from "./states/conversationStateB.js";
-import { readyOrNotPrompt, readyOrNotSystemPrompt } from "./prompts/readyOrNotPrompt.js";
+import { scopeTopicPrompt, scopeTopicSystemPrompt } from "./prompts/scopeTopicPrompt.js";
 import { proposePlanPrompt } from "./prompts/proposePlanPrompt.js";
 import { classifyFeedbackPrompt } from "./prompts/classifyFeedbackPrompt.js";
 import { fullModel, miniModel } from "./model.js";
@@ -21,7 +21,7 @@ const MAX_CONFIRM_ROUNDS = 2;
 
 // ============================================================ SCHEMAS ============================================================
 
-export const ReadyOrNotOutput = z.object({
+export const ScopeTopicOutput = z.object({
   status: z.enum(["ready", "needs_input", "off_topic"]).describe(
     "'ready' when there is a specific in-scope topic AND a clear signal to start. 'off_topic' when the subject is not a real armed conflict. 'needs_input' for anything else (too vague, too broad, or no signal to start)."
   ),
@@ -56,9 +56,9 @@ export type ConfirmPlanResume = { approved: true } | { feedback: string };
 // ============================================================ MODEL TYPES ============================================================
 // Mirrors the dependency-injection style in conversationAgent.ts so tests can pass a fake.
 
-export type ReadyOrNotModel = {
-  withStructuredOutput: (schema: typeof ReadyOrNotOutput) => {
-    invoke: (messages: (SystemMessage | HumanMessage)[]) => Promise<z.infer<typeof ReadyOrNotOutput>>;
+export type ScopeTopicModel = {
+  withStructuredOutput: (schema: typeof ScopeTopicOutput) => {
+    invoke: (messages: (SystemMessage | HumanMessage)[]) => Promise<z.infer<typeof ScopeTopicOutput>>;
   };
 };
 
@@ -90,15 +90,15 @@ const formatPlan = (plan: PlanType) =>
  *
  * Appends the nudge to `messages` itself so that ask_user can stay purely an interrupt().
  */
-export const makeReadyOrNotNode = (llm: ReadyOrNotModel) =>
+export const makeScopeTopicNode = (llm: ScopeTopicModel) =>
   async (state: ConversationStateBType) => {
-    const prompt = readyOrNotPrompt
+    const prompt = scopeTopicPrompt
       .replace("{messages}", getBufferString(state.messages))
       .replace("{date}", new Date().toDateString());
 
-    const structuredModel = llm.withStructuredOutput(ReadyOrNotOutput);
+    const structuredModel = llm.withStructuredOutput(ScopeTopicOutput);
     const response = await structuredModel.invoke([
-      new SystemMessage(readyOrNotSystemPrompt),
+      new SystemMessage(scopeTopicSystemPrompt),
       new HumanMessage(prompt),
     ]);
 
@@ -106,7 +106,7 @@ export const makeReadyOrNotNode = (llm: ReadyOrNotModel) =>
     if (response.status === "ready") {
       return new Command({
         goto: "propose_plan",
-        update: { ready: true, topic: response.topic },
+        update: { ready_to_plan: true, rough_topic: response.topic },
       });
     }
 
@@ -117,7 +117,7 @@ export const makeReadyOrNotNode = (llm: ReadyOrNotModel) =>
       return new Command({
         goto: END,
         update: {
-          ready: false,
+          ready_to_plan: false,
           messages: [new AIMessage(
             "We don't seem to be converging on something I can research. " +
             "Start a new conversation whenever you'd like to try a different angle."
@@ -129,7 +129,7 @@ export const makeReadyOrNotNode = (llm: ReadyOrNotModel) =>
     return new Command({
       goto: "ask_user",
       update: {
-        ready: false,
+        ready_to_plan: false,
         pending_question: response.pending_question,
         clarify_rounds: state.clarify_rounds + 1,
         messages: [new AIMessage(response.pending_question)],
@@ -140,7 +140,7 @@ export const makeReadyOrNotNode = (llm: ReadyOrNotModel) =>
 /**
  * Interrupt-only node. Pauses for the user's reply to `pending_question` and nothing else.
  * Re-executes from the top on resume, which is safe precisely because it holds no other logic.
- * Routes back to ready_or_not via a plain edge.
+ * Routes back to scope_topic via a plain edge.
  */
 export const askUserNode = async (_state: ConversationStateBType) => {
   const answer = interrupt<string, unknown>(_state.pending_question);
@@ -162,7 +162,7 @@ export const askUserNode = async (_state: ConversationStateBType) => {
 export const makeProposePlanNode = (llm: ProposePlanModel) =>
   async (state: ConversationStateBType) => {
     const prompt = proposePlanPrompt
-      .replace("{topic}", state.topic)
+      .replace("{topic}", state.rough_topic)
       .replace("{messages}", getBufferString(state.messages))
       .replace("{date}", new Date().toDateString());
 
@@ -238,7 +238,7 @@ export const confirmPlanNode = async (state: ConversationStateBType) => {
 /**
  * LLM node — no interrupt. Decides whether the rejection is about the angles or about the
  * topic itself. Split into its own node rather than a conditional edge for the same reason
- * ready_or_not and ask_user are split: every LLM call gets its own checkpoint boundary.
+ * scope_topic and ask_user are split: every LLM call gets its own checkpoint boundary.
  */
 export const makeClassifyFeedbackNode = (llm: ClassifyFeedbackModel) =>
   async (state: ConversationStateBType) => {
@@ -261,10 +261,10 @@ export const makeClassifyFeedbackNode = (llm: ClassifyFeedbackModel) =>
     // genuinely new subject gets a fresh clarification and confirmation budget rather than
     // inheriting the exhausted one from the abandoned topic.
     return new Command({
-      goto: "ready_or_not",
+      goto: "scope_topic",
       update: {
-        ready: false,
-        topic: "",
+        ready_to_plan: false,
+        rough_topic: "",
         plan: null,
         plan_confirmed: false,
         confirm_rounds: 0,
@@ -293,7 +293,7 @@ export const researchNode = async (state: ConversationStateBType) => {
 
 // ============================================================ GRAPH ============================================================
 
-const readyOrNotNode = makeReadyOrNotNode(fullModel);
+const scopeTopicNode = makeScopeTopicNode(fullModel);
 const proposePlanNode = makeProposePlanNode(fullModel);
 const classifyFeedbackNode = makeClassifyFeedbackNode(miniModel);
 
@@ -301,14 +301,14 @@ const classifyFeedbackNode = makeClassifyFeedbackNode(miniModel);
 const checkpointer = new MemorySaver();
 
 const conversationGraphBuilderB = new StateGraph(ConversationStateB)
-  .addNode("ready_or_not", readyOrNotNode, { ends: ["ask_user", "propose_plan", END] })
+  .addNode("scope_topic", scopeTopicNode, { ends: ["ask_user", "propose_plan", END] })
   .addNode("ask_user", askUserNode)
   .addNode("propose_plan", proposePlanNode, { ends: ["confirm_plan", "research"] })
   .addNode("confirm_plan", confirmPlanNode, { ends: ["classify_feedback", "research"] })
-  .addNode("classify_feedback", classifyFeedbackNode, { ends: ["propose_plan", "ready_or_not"] })
+  .addNode("classify_feedback", classifyFeedbackNode, { ends: ["propose_plan", "scope_topic"] })
   .addNode("research", researchNode)
-  .addEdge(START, "ready_or_not")
-  .addEdge("ask_user", "ready_or_not")
+  .addEdge(START, "scope_topic")
+  .addEdge("ask_user", "scope_topic")
   .addEdge("research", END);
 
 export const conversationGraphB = conversationGraphBuilderB.compile({ checkpointer });

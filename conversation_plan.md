@@ -5,7 +5,7 @@ war-research agent: the part that runs **before** the actual research
 sub-agent is invoked. It covers three required behaviors:
 
 1. Detect whether the user has given a workable, in-scope topic and clearly
-   signaled they want to start (`ReadyOrNot`).
+   signaled they want to start (`ScopeTopic`).
 2. If not, push back with a concrete, easy-to-answer suggestion rather than
    an open-ended question (`AskUser`).
 3. Once a topic is accepted, propose a concrete research plan (final topic +
@@ -24,9 +24,9 @@ never mixed in the same node — each node does exactly one of those things.
 | Field | Type | Set by | Purpose |
 |---|---|---|---|
 | `messages` | `list[AnyMessage]` (reducer: append) | all nodes | Full conversation history; every LLM judgment is made against this, not just the latest turn |
-| `ready` | `bool` | `ReadyOrNot` | Whether the topic + intent-to-start conditions are both met |
-| `topic` | `str \| None` | `ReadyOrNot` | Rough topic distilled from the full conversation once `ready = True` |
-| `pending_question` | `str \| None` | `ReadyOrNot` | The suggestive prompt shown to the user by `AskUser` when not ready |
+| `ready_to_plan` | `bool` | `ScopeTopic` | Whether the topic + intent-to-start conditions are both met |
+| `rough_topic` | `str \| None` | `ScopeTopic` | Rough topic distilled from the full conversation once `ready_to_plan = True` |
+| `pending_question` | `str \| None` | `ScopeTopic` | The suggestive prompt shown to the user by `AskUser` when not ready |
 | `plan` | `{final_topic: str, angles: list[str]} \| None` | `ProposePlan` | The concrete research plan shown for confirmation |
 | `plan_confirmed` | `bool` | `ConfirmPlan` / `ProposePlan` (cap case) | Whether the user has approved the current plan |
 | `confirm_rounds` | `int` | `ConfirmPlan` | Number of times the user has rejected a proposed plan; used for the round cap |
@@ -35,7 +35,7 @@ never mixed in the same node — each node does exactly one of those things.
 
 ## Nodes
 
-### 1. `ReadyOrNot` (LLM call — no interrupt)
+### 1. `ScopeTopic` (LLM call — no interrupt)
 
 **Responsibility:** decide whether the conversation so far contains a
 workable topic and a clear signal to start.
@@ -49,10 +49,11 @@ workable topic and a clear signal to start.
 - If either condition fails: writes a **suggestive** `pending_question`
   (e.g. "WWII is a huge topic — want to focus on the Pacific theater
   instead?") rather than an open question, appends it to `messages` as an
-  AI turn, sets `ready = False`.
-- If both conditions hold: sets `ready = True` and `topic` to the
-  synthesized topic.
-- Routes: `ready = False` → `AskUser`; `ready = True` → `ProposePlan`.
+  AI turn, sets `ready_to_plan = False`.
+- If both conditions hold: sets `ready_to_plan = True` and `rough_topic` to
+  the synthesized topic.
+- Routes: `ready_to_plan = False` → `AskUser`; `ready_to_plan = True` →
+  `ProposePlan`.
 
 ### 2. `AskUser` (interrupt only)
 
@@ -60,7 +61,7 @@ workable topic and a clear signal to start.
 
 - Calls `interrupt()` with `pending_question` as the payload. Nothing else.
 - On resume, appends the answer to `messages` as a human turn.
-- Routes back to `ReadyOrNot` unconditionally, forming the clarification
+- Routes back to `ScopeTopic` unconditionally, forming the clarification
   loop.
 - Safe to re-run from the top on resume — it has no other logic.
 
@@ -72,7 +73,7 @@ research plan; also enforces the confirmation round cap.
 - First checks `confirm_rounds` against the cap (pure logic, no LLM needed
   for this check).
 - Calls an LLM with structured output to produce `plan = {final_topic,
-  angles}` from `topic` plus the full `messages` history (which may already
+  angles}` from `rough_topic` plus the full `messages` history (which may already
   contain feedback from a prior rejected plan — the LLM should incorporate
   it into the new version).
 - If `confirm_rounds` is under the cap: leaves `plan_confirmed` unset,
@@ -100,7 +101,7 @@ decision.
 **Responsibility:** decide whether rejection feedback is about the plan's
 angles or about the topic itself, and route accordingly. This is kept as
 its own node rather than logic inside a conditional-edge function, for the
-same reason `ReadyOrNot` and `AskUser` are split: any LLM call gets its own
+same reason `ScopeTopic` and `AskUser` are split: any LLM call gets its own
 node so it is independently checkpointed and re-runnable.
 
 - Calls an LLM against the full `messages` history to classify the latest
@@ -113,7 +114,7 @@ node so it is independently checkpointed and re-runnable.
   topic; `confirm_rounds` is left as-is since it was already incremented in
   `ConfirmPlan`).
 - Topic-level: resets `confirm_rounds` to 0 (a new topic starts a fresh
-  confirmation cycle) and routes back to `ReadyOrNot` to renegotiate the
+  confirmation cycle) and routes back to `ScopeTopic` to renegotiate the
   topic using the latest feedback.
 
 ### 6. `Research` (action node — invokes the actual research sub-agent)
@@ -125,7 +126,7 @@ node so it is independently checkpointed and re-runnable.
 - Invokes the research sub-agent with `plan.final_topic` and `plan.angles`.
 - This is the node most likely to be expensive/long-running (and, if the
   sub-agent is itself a LangGraph subgraph with its own `interrupt()`
-  calls, it is deliberately isolated from `ReadyOrNot` / `ProposePlan` so
+  calls, it is deliberately isolated from `ScopeTopic` / `ProposePlan` so
   that a nested interrupt/resume inside the sub-agent never forces those
   LLM-calling nodes to re-run).
 
@@ -134,10 +135,10 @@ node so it is independently checkpointed and re-runnable.
 ## Routing diagram
 
 ```
-START -> ReadyOrNot
+START -> ScopeTopic
 
-ReadyOrNot --not ready--> AskUser --> ReadyOrNot          (clarification loop)
-ReadyOrNot --ready------> ProposePlan
+ScopeTopic --not ready--> AskUser --> ScopeTopic          (clarification loop)
+ScopeTopic --ready------> ProposePlan
 
 ProposePlan --under cap-----> ConfirmPlan
 ProposePlan --cap reached---> Research                     (auto-accept)
@@ -146,7 +147,7 @@ ConfirmPlan --approved-------> Research
 ConfirmPlan --feedback-------> ClassifyFeedback
 
 ClassifyFeedback --angle-level--> ProposePlan               (plan revision loop)
-ClassifyFeedback --topic-level--> ReadyOrNot                (topic renegotiation; confirm_rounds reset)
+ClassifyFeedback --topic-level--> ScopeTopic                (topic renegotiation; confirm_rounds reset)
 ```
 
 ---
@@ -157,7 +158,7 @@ ClassifyFeedback --topic-level--> ReadyOrNot                (topic renegotiation
   `interrupt()` — never both — because a node re-executes from the start on
   resume, and repeating an LLM call on every resume is wasteful and
   non-deterministic.
-- **`messages` always drives judgment.** `ReadyOrNot` and `ClassifyFeedback`
+- **`messages` always drives judgment.** `ScopeTopic` and `ClassifyFeedback`
   both read the full history, not just the latest turn, since the topic and
   the nature of feedback are often established across multiple turns.
 - **The round cap lives in `ProposePlan`, not `ConfirmPlan`.** The cap check
@@ -166,6 +167,6 @@ ClassifyFeedback --topic-level--> ReadyOrNot                (topic renegotiation
   `ProposePlan`'s behavior (revise vs. auto-accept) explicit and testable.
 - **`Research` is isolated from the negotiation loop.** If the research
   sub-agent is itself an interruptible subgraph, none of its internal
-  pause/resume cycles should force `ReadyOrNot` or `ProposePlan` to
+  pause/resume cycles should force `ScopeTopic` or `ProposePlan` to
   re-run — this is why plan confirmation is fully resolved before
   `Research` is ever entered.

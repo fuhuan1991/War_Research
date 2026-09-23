@@ -18,13 +18,29 @@ npx vitest run tests/eval/clarification_prompt.eval.test.ts
 npx vitest run tests/unit/researchAgent.test.ts -t "test name substring"
 ```
 
-Requires `.env` (see `.env.example`): `OPENAI_API_KEY` and `TAVILY_API_KEY` are required; `ANTHROPIC_API_KEY` is declared but unused (all models currently route through `ChatOpenAI` — see `src/model.ts`); `LANGSMITH_*` is optional tracing.
+Requires a `.env` in the project root. There is no `.env.example` in the repo — it is gitignored — so the keys are listed here instead:
+
+```bash
+OPENAI_API_KEY=       # required — every model routes through ChatOpenAI (src/model.ts)
+TAVILY_API_KEY=       # required — web search (src/tools/tavilySearch.ts)
+ANTHROPIC_API_KEY=    # unused today; no model routes through Anthropic
+LANGSMITH_API_KEY=    # optional — tracing
+LANGSMITH_TRACING=
+LANGSMITH_PROJECT=war-research
+```
 
 `tests/eval/*` make real LLM and Tavily calls and cost money/time — only run when explicitly needed, not as part of routine iteration.
 
+## Project docs
+
+- `TODO.md` — the authoritative backlog. **Read it before proposing work.** It already tracks the known gaps (unenforced `MAX_CONCURRENT_RESEARCH_UNITS`, `Promise.all` failure isolation, dead `raw_notes`, iteration-limit off-by-one, missing README/CI/linter), so they don't need re-deriving from a fresh scan.
+- `docs/question-flow.md` — annotated mermaid flow of the main pipeline, including which model tier and message role each node uses. Check it before changing routing logic. It predates `conversationAgentB` and does not cover it.
+- `conversation_plan.md` — node-level design doc for the scoping / plan-confirmation loop that `src/conversationAgentB.ts` implements.
+- `plan.md` — stale original build plan, gitignored. Superseded by this file and `TODO.md`; ignore it.
+
 ## Architecture
 
-This is a war-focused deep research agent (LangGraph.js), structured as three nested graphs that mirror a lead-researcher/sub-researcher pattern:
+This is a war-focused deep research agent (LangGraph.js). The main pipeline is three nested graphs that mirror a lead-researcher/sub-researcher pattern (a fourth, experimental top-level graph is described under `conversationAgentB` below):
 
 ```
 conversationGraph (src/conversationAgent.ts)   — top-level graph, holds the checkpointer
@@ -43,7 +59,7 @@ researchAgent (src/researchAgent.ts)         — one instance per research topic
     → until CompleteSearch or MAX_RESEARCHER_TURNS, then compresses findings
 ```
 
-`langgraph.json` registers all three graphs independently so each can be run/visualized on its own in LangGraph Studio, not just as a whole. `docs/question-flow.md` has the full annotated flow diagram (mermaid) including which model tier and message role each node uses — check it before changing routing logic.
+`langgraph.json` registers all four graphs — the three above plus `conversationAgentB` — independently, so each can be run and visualized on its own in LangGraph Studio, not just as a whole.
 
 ### The assess → dispatch pattern
 
@@ -67,12 +83,37 @@ States are zod schemas wrapped in `withLangGraph` (`src/states/*.ts`):
 - Message fields (`messages`, `supervisor_messages`, `researcher_messages`) use `MessagesZodMeta` for LangGraph's built-in message-append reducer.
 - `notes`/`raw_notes` use a custom `(a, b) => [...a, ...b]` reducer so parallel branches (parallel researchers, parallel searches) merge without clobbering each other.
 - `research_iterations` is a plain counter checked against `MAX_SUPERVISOR_TURNS`/`MAX_RESEARCHER_TURNS` (`src/config.ts`) to force termination.
+- Non-message fields that a node reads back must declare their default via `withLangGraph(..., { default })`, not zod's `.default()`. LangGraph builds its channels from the registry metadata, so a plain `z.number().default(0)` reads back as `undefined` inside a node and `state.counter + 1` silently becomes `NaN` (see `src/states/conversationStateB.ts`).
 
 Synthetic control-flow `ToolMessage`s (e.g. `"<Research completed>"`) are wrapped in angle brackets by convention; `compression_node` filters these out via `.startsWith("<")` when extracting real `raw_notes`, so preserve that convention if you add new synthetic messages.
 
+### `conversationAgentB` — experimental scoping graph (human-in-the-loop)
+
+`src/conversationAgentB.ts` is a **second, parallel top-level graph, not a replacement** for `conversationAgent.ts`. Both are registered and both run. It swaps the one-shot `clarification_node` for a negotiation loop: scope the topic, propose a plan (final topic + 3–5 angles), and get explicit user approval before any research starts.
+
+```
+START → scope_topic ⇄ ask_user          (nudge the user until the topic is workable)
+              │
+              ▼
+        propose_plan → confirm_plan → research → END
+              ▲             │
+              └─ classify_feedback ─┘   (angle-level feedback replans; topic-level restarts scoping)
+```
+
+- State is `ConversationStateB` (`src/states/conversationStateB.ts`), which **extends** `ConversationState` — so it inherits `research_brief`/`supervisor_messages`/`final_report`, which graph B does not currently use.
+- `research` is a **placeholder** node: it reports what it would have researched and calls no sub-agent. Graph B is therefore not yet a superset of graph A.
+- `MAX_CLARIFY_ROUNDS`/`MAX_CONFIRM_ROUNDS` are deliberately local to the file rather than in `src/config.ts`, to keep the experiment's footprint inside its own files. Promote them if it graduates.
+- Design doc: `conversation_plan.md`.
+
+**The `interrupt()` rule.** Graph B pauses for the user with LangGraph's `interrupt()`, which requires a checkpointer. A node that calls `interrupt()` **re-executes from the top on resume**, so:
+
+- Never mix an LLM call and an `interrupt()` in one node. `ask_user` and `confirm_plan` are interrupt-only; `scope_topic`, `propose_plan` and `classify_feedback` are LLM-only. Preserve that split when adding nodes — a mixed node would re-fire its LLM call on every resume.
+- Anything an interrupting node needs on resume must live in state, never in a local variable. This is why `propose_plan` writes `plan` to state *before* `confirm_plan` pauses: `confirm_plan` rebuilds its interrupt payload from state each time it re-executes.
+- Resume contract for `confirm_plan`: `new Command({ resume: { approved: true } })` to approve, or `new Command({ resume: { feedback: "..." } })` to reject. Anything else is treated as feedback.
+
 ### Dependency injection for testing
 
-`conversationAgent.ts` node factories (`makeClarificationNode(llm)`, `makeBriefingNode(llm)`, `makeReportGenerator(llm)`) take the model as a parameter so tests can inject a fake. `supervisorAgent.ts`/`researchAgent.ts` node factories instead import `fullModel`/`nanoModel` from `src/model.ts` directly at module scope; unit tests mock that whole module with `vi.mock("../../src/model.js", ...)` plus `vi.hoisted` (see `tests/unit/researchAgent.test.ts`) rather than injecting.
+`conversationAgent.ts` node factories (`makeClarificationNode(llm)`, `makeBriefingNode(llm)`, `makeReportGenerator(llm)`) take the model as a parameter so tests can inject a fake. `supervisorAgent.ts`/`researchAgent.ts` node factories instead import `fullModel`/`nanoModel` from `src/model.ts` directly at module scope; unit tests mock that whole module with `vi.mock("../../src/model.js", ...)` plus `vi.hoisted` (see `tests/unit/researchAgent.test.ts`) rather than injecting. `conversationAgentB.ts` follows the injecting style (`makeScopeTopicNode(llm)`, `makeProposePlanNode(llm)`, `makeClassifyFeedbackNode(llm)`).
 
 ### Tavily search pipeline (`src/tools/tavilySearch.ts`)
 

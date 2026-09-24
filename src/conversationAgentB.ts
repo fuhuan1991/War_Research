@@ -43,15 +43,11 @@ export const ProposePlanOutput = z.object({
 });
 
 export const ClassifyFeedbackOutput = z.object({
-  kind: z.enum(["angle", "topic"]).describe(
-    "'angle' when the subject still stands and only the lines of inquiry need adjusting. 'topic' when the user is rejecting the subject itself."
+  kind: z.enum(["approve", "angle", "topic"]).describe(
+    "'approve' when the user is accepting the plan as proposed. 'angle' when the subject still stands and only the lines of inquiry need adjusting. 'topic' when the user is rejecting the subject itself."
   ),
   reason: z.string().describe("One sentence explaining the classification."),
 });
-
-// The contract for resuming confirm_plan: new Command({ resume: { approved: true } })
-// to approve, or new Command({ resume: { feedback: "..." } }) to reject with feedback.
-export type ConfirmPlanResume = { approved: true } | { feedback: string };
 
 // ============================================================ MODEL TYPES ============================================================
 // Mirrors the dependency-injection style in conversationAgent.ts so tests can pass a fake.
@@ -76,11 +72,20 @@ export type ClassifyFeedbackModel = {
 
 // ============================================================ HELPERS ============================================================
 
+// Asked at the end of every plan proposal. It is written into `messages` so that any UI
+// rendering the message stream shows it, and reused as confirm_plan's interrupt payload —
+// exactly the arrangement scope_topic/ask_user already use for `pending_question`.
+const CONFIRM_QUESTION =
+  "Does this research plan look right? Approve it, or tell me what to change.";
+
 const formatAngles = (angles: string[]) =>
   angles.map((a, i) => `${i + 1}. ${a}`).join("\n");
 
 const formatPlan = (plan: PlanType) =>
   `**Proposed research plan**\n\n**Topic:** ${plan.final_topic}\n\n**Angles:**\n${formatAngles(plan.angles)}`;
+
+const formatPlanWithQuestion = (plan: PlanType) =>
+  `${formatPlan(plan)}\n\n${CONFIRM_QUESTION}`;
 
 // ============================================================ NODES ============================================================
 
@@ -156,8 +161,8 @@ export const askUserNode = async (_state: ConversationStateBType) => {
  * confirmation round cap.
  *
  * The plan is written to state (and rendered into `messages`) BEFORE confirm_plan pauses:
- * confirm_plan rebuilds its interrupt payload from state on every resume, and
- * classify_feedback needs to see the proposal in the history to interpret the critique.
+ * confirm_plan re-executes from the top on every resume and so can hold nothing itself, and
+ * classify_feedback needs to see the proposal in the history to interpret the reply.
  */
 export const makeProposePlanNode = (llm: ProposePlanModel) =>
   async (state: ConversationStateBType) => {
@@ -193,52 +198,32 @@ export const makeProposePlanNode = (llm: ProposePlanModel) =>
       update: {
         plan,
         plan_confirmed: false,
-        messages: [new AIMessage(formatPlan(plan))],
+        messages: [new AIMessage(formatPlanWithQuestion(plan))],
       },
     });
   };
 
 /**
- * Interrupt-only node. Surfaces the plan and captures approve/reject. No LLM call, and no
- * interpretation beyond checking the resume value's shape.
+ * Interrupt-only node, and the exact counterpart of ask_user: it pauses for a free-text reply
+ * and does nothing else. Re-executing from the top on resume is safe precisely because it
+ * holds no other logic. Routes to classify_feedback via a plain edge.
  *
- * Resume with { approved: true } to approve, or { feedback: "..." } to reject.
+ * Deciding whether the reply was an approval or a critique needs an LLM, which cannot live in
+ * an interrupting node — so classify_feedback owns that reading.
  */
-export const confirmPlanNode = async (state: ConversationStateBType) => {
-  const resume = interrupt<unknown, ConfirmPlanResume>({
-    question: "Does this research plan look right? Approve it, or tell me what to change.",
-    final_topic: state.plan?.final_topic ?? "",
-    angles: state.plan?.angles ?? [],
-  });
+export const confirmPlanNode = async (_state: ConversationStateBType) => {
+  const answer = interrupt<string, unknown>(CONFIRM_QUESTION);
 
-  if (resume && typeof resume === "object" && "approved" in resume && resume.approved === true) {
-    return new Command({
-      goto: "research",
-      update: { plan_confirmed: true },
-    });
-  }
-
-  // Anything that is not an approval is treated as feedback. The defensive String() keeps a
-  // malformed resume value from crashing the run mid-conversation.
-  const feedback =
-    resume && typeof resume === "object" && "feedback" in resume
-      ? String(resume.feedback)
-      : String(resume ?? "");
-
-  return new Command({
-    goto: "classify_feedback",
-    update: {
-      plan_confirmed: false,
-      confirm_rounds: state.confirm_rounds + 1,
-      messages: [new HumanMessage(feedback)],
-    },
-  });
+  return {
+    messages: [new HumanMessage(String(answer))],
+  };
 };
 
 /**
- * LLM node — no interrupt. Decides whether the rejection is about the angles or about the
- * topic itself. Split into its own node rather than a conditional edge for the same reason
- * scope_topic and ask_user are split: every LLM call gets its own checkpoint boundary.
+ * LLM node — no interrupt. Reads the user's free-text reply to the proposed plan and decides
+ * whether it approves the plan, asks for different angles, or rejects the topic itself. Split
+ * into its own node rather than a conditional edge for the same reason scope_topic and
+ * ask_user are split: every LLM call gets its own checkpoint boundary.
  */
 export const makeClassifyFeedbackNode = (llm: ClassifyFeedbackModel) =>
   async (state: ConversationStateBType) => {
@@ -251,10 +236,21 @@ export const makeClassifyFeedbackNode = (llm: ClassifyFeedbackModel) =>
     const structuredModel = llm.withStructuredOutput(ClassifyFeedbackOutput);
     const response = await structuredModel.invoke([new HumanMessage(prompt)]);
 
-    // The topic still stands — regenerate the plan. confirm_rounds is left alone; it was
-    // already incremented by confirm_plan.
+    // The user is happy with the plan as proposed.
+    if (response.kind === "approve") {
+      return new Command({
+        goto: "research",
+        update: { plan_confirmed: true },
+      });
+    }
+
+    // The topic still stands — regenerate the plan. This is the only path that spends a
+    // confirmation round, so approving costs nothing against MAX_CONFIRM_ROUNDS.
     if (response.kind === "angle") {
-      return new Command({ goto: "propose_plan" });
+      return new Command({
+        goto: "propose_plan",
+        update: { confirm_rounds: state.confirm_rounds + 1 },
+      });
     }
 
     // The topic itself is rejected — renegotiate it from scratch. Both counters reset, so a
@@ -304,11 +300,12 @@ const conversationGraphBuilderB = new StateGraph(ConversationStateB)
   .addNode("scope_topic", scopeTopicNode, { ends: ["ask_user", "propose_plan", END] })
   .addNode("ask_user", askUserNode)
   .addNode("propose_plan", proposePlanNode, { ends: ["confirm_plan", "research"] })
-  .addNode("confirm_plan", confirmPlanNode, { ends: ["classify_feedback", "research"] })
-  .addNode("classify_feedback", classifyFeedbackNode, { ends: ["propose_plan", "scope_topic"] })
+  .addNode("confirm_plan", confirmPlanNode)
+  .addNode("classify_feedback", classifyFeedbackNode, { ends: ["propose_plan", "scope_topic", "research"] })
   .addNode("research", researchNode)
   .addEdge(START, "scope_topic")
   .addEdge("ask_user", "scope_topic")
+  .addEdge("confirm_plan", "classify_feedback")
   .addEdge("research", END);
 
 export const conversationGraphB = conversationGraphBuilderB.compile({ checkpointer });

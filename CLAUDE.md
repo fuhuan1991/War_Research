@@ -95,9 +95,9 @@ Synthetic control-flow `ToolMessage`s (e.g. `"<Research completed>"`) are wrappe
 START → scope_topic ⇄ ask_user          (nudge the user until the topic is workable)
               │
               ▼
-        propose_plan → confirm_plan → research → END
-              ▲             │
-              └─ classify_feedback ─┘   (angle-level feedback replans; topic-level restarts scoping)
+        propose_plan → confirm_plan → classify_feedback → research → END
+              ▲                               │
+              └───────────────────────────────┘   (angle-level feedback replans; topic-level restarts scoping)
 ```
 
 - State is `ConversationStateB` (`src/states/conversationStateB.ts`), which **extends** `ConversationState` — so it inherits `research_brief`/`supervisor_messages`/`final_report`, which graph B does not currently use.
@@ -108,8 +108,8 @@ START → scope_topic ⇄ ask_user          (nudge the user until the topic is w
 **The `interrupt()` rule.** Graph B pauses for the user with LangGraph's `interrupt()`, which requires a checkpointer. A node that calls `interrupt()` **re-executes from the top on resume**, so:
 
 - Never mix an LLM call and an `interrupt()` in one node. `ask_user` and `confirm_plan` are interrupt-only; `scope_topic`, `propose_plan` and `classify_feedback` are LLM-only. Preserve that split when adding nodes — a mixed node would re-fire its LLM call on every resume.
-- Anything an interrupting node needs on resume must live in state, never in a local variable. This is why `propose_plan` writes `plan` to state *before* `confirm_plan` pauses: `confirm_plan` rebuilds its interrupt payload from state each time it re-executes.
-- Resume contract for `confirm_plan`: `new Command({ resume: { approved: true } })` to approve, or `new Command({ resume: { feedback: "..." } })` to reject. Anything else is treated as feedback.
+- Anything an interrupting node needs on resume must live in state, never in a local variable. This is why `propose_plan` writes `plan` to state *before* `confirm_plan` pauses — `confirm_plan` itself holds nothing, and `classify_feedback` reads the proposal back out of `messages`.
+- Resume contract: both interrupting nodes take **free text**, resumed with `new Command({ resume: "..." })`. `ask_user`'s reply feeds `scope_topic`; `confirm_plan`'s reply is appended to `messages` and handed to `classify_feedback`, which decides approve / angle-revision / topic-restart. `confirm_plan` deliberately does no interpretation of its own — reading "approve" needs an LLM, and an interrupting node cannot hold one. Both nodes also render their question into `messages` before pausing (`scope_topic` writes the nudge, `propose_plan` writes the plan plus the confirmation question), so a chat UI showing only the message stream sees what is being asked.
 
 ### Dependency injection for testing
 

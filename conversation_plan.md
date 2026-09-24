@@ -77,42 +77,49 @@ research plan; also enforces the confirmation round cap.
   contain feedback from a prior rejected plan — the LLM should incorporate
   it into the new version).
 - If `confirm_rounds` is under the cap: leaves `plan_confirmed` unset,
-  routes to `ConfirmPlan`.
+  renders the plan **and the confirmation question** into `messages`, and
+  routes to `ConfirmPlan`. The question goes into `messages` rather than
+  living only in the interrupt payload, so a UI rendering the message
+  stream shows the user what they are being asked.
 - If `confirm_rounds` has reached the cap: sets `plan_confirmed = True`
   directly (auto-accepts the latest synthesized plan) and routes straight to
   `Research`, skipping further confirmation.
 
 ### 4. `ConfirmPlan` (interrupt only)
 
-**Responsibility:** show the plan and capture the user's approve/reject
-decision.
+**Responsibility:** pause and collect the user's free-text reply to the
+proposed plan. The exact counterpart of `AskUser`.
 
-- Calls `interrupt()` with the plan payload (`final_topic`, `angles`) and a
-  confirmation question. Nothing else — no LLM call, no interpretation
-  logic beyond checking the resume value's shape.
-- Resume value is one of two shapes: an explicit approval signal, or free
-  text feedback.
-- Approval: sets `plan_confirmed = True`, routes to `Research`.
-- Feedback: increments `confirm_rounds`, appends the feedback as a human
-  turn, sets `plan_confirmed = False`, routes to `ClassifyFeedback`.
+- Calls `interrupt()` with the confirmation question as the payload.
+  Nothing else — no LLM call, no interpretation of the reply at all.
+- Resume value is free text: "approve", "looks good", "replace angle 2
+  with X", "wrong war" — anything.
+- On resume, appends the reply to `messages` as a human turn and routes to
+  `ClassifyFeedback` unconditionally, via a plain edge.
+- Deciding whether that text was an approval requires an LLM, and an
+  interrupting node cannot hold one — hence the split.
 
 ### 5. `ClassifyFeedback` (LLM call — no interrupt)
 
-**Responsibility:** decide whether rejection feedback is about the plan's
-angles or about the topic itself, and route accordingly. This is kept as
+**Responsibility:** read the user's reply to the proposed plan and decide
+whether it approves the plan, asks for different angles, or rejects the
+topic itself, and route accordingly. This is kept as
 its own node rather than logic inside a conditional-edge function, for the
 same reason `ScopeTopic` and `AskUser` are split: any LLM call gets its own
 node so it is independently checkpointed and re-runnable.
 
 - Calls an LLM against the full `messages` history to classify the latest
-  feedback as either:
+  reply as one of:
+  - **approve** — the user accepts the plan as proposed (e.g. "approve",
+    "looks good", "go ahead"),
   - **angle-level** — the topic still stands, only the angles need
     adjusting (e.g. "swap angle B for a civilian perspective"), or
   - **topic-level** — the user is rejecting the topic itself (e.g. "this
     isn't the right topic, let's pick something else").
-- Angle-level: routes to `ProposePlan` (regenerate the plan for the same
-  topic; `confirm_rounds` is left as-is since it was already incremented in
-  `ConfirmPlan`).
+- Approve: sets `plan_confirmed = True`, routes to `Research`.
+- Angle-level: increments `confirm_rounds` and routes to `ProposePlan`
+  (regenerate the plan for the same topic). This is the only path that
+  spends a confirmation round, so approving costs nothing against the cap.
 - Topic-level: resets `confirm_rounds` to 0 (a new topic starts a fresh
   confirmation cycle) and routes back to `ScopeTopic` to renegotiate the
   topic using the latest feedback.
@@ -121,8 +128,9 @@ node so it is independently checkpointed and re-runnable.
 
 **Responsibility:** do the real work, using the confirmed plan.
 
-- Only reachable once `plan_confirmed = True` (either by explicit user
-  approval, or by the round-cap auto-accept in `ProposePlan`).
+- Only reachable once `plan_confirmed = True` (either by an approval
+  recognized in `ClassifyFeedback`, or by the round-cap auto-accept in
+  `ProposePlan`).
 - Invokes the research sub-agent with `plan.final_topic` and `plan.angles`.
 - This is the node most likely to be expensive/long-running (and, if the
   sub-agent is itself a LangGraph subgraph with its own `interrupt()`
@@ -143,10 +151,10 @@ ScopeTopic --ready------> ProposePlan
 ProposePlan --under cap-----> ConfirmPlan
 ProposePlan --cap reached---> Research                     (auto-accept)
 
-ConfirmPlan --approved-------> Research
-ConfirmPlan --feedback-------> ClassifyFeedback
+ConfirmPlan --------------> ClassifyFeedback               (always; free-text reply)
 
-ClassifyFeedback --angle-level--> ProposePlan               (plan revision loop)
+ClassifyFeedback --approve-----> Research
+ClassifyFeedback --angle-level--> ProposePlan               (plan revision loop; confirm_rounds +1)
 ClassifyFeedback --topic-level--> ScopeTopic                (topic renegotiation; confirm_rounds reset)
 ```
 

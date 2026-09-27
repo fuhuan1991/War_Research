@@ -12,7 +12,7 @@ and node names below map to the implementation in snake_case (`ScopeTopic`
 2. If not, push back with a concrete, easy-to-answer suggestion rather than
    an open-ended question (`AskUser`).
 3. Once a topic is accepted, propose a concrete research plan (final topic +
-   exactly `ANGLES_PER_PLAN` angles) and get explicit user confirmation before
+   at most `MAX_ANGLES_PER_PLAN` angles) and get explicit user confirmation before
    research begins (`ProposePlan` / `ConfirmPlan`). This step is **mandatory**,
    not optional.
 
@@ -89,10 +89,12 @@ research plan; also enforces the confirmation round cap.
   (which may already contain feedback from a prior rejected plan — the LLM
   should incorporate it into the new version). The round cap governs whether
   the resulting plan is put to the user, not whether it gets built.
-- Truncates `angles` to `ANGLES_PER_PLAN`. Both the prompt and the schema ask
-  for exactly that many, but neither is a constraint the model is bound by,
+- Caps `angles` at `MAX_ANGLES_PER_PLAN`. Both the prompt and the schema ask
+  for at most that many, but neither is a constraint the model is bound by,
   and every surplus angle would otherwise become another researcher
-  downstream.
+  downstream. The cap is one-sided: a plan with FEWER angles passes through
+  untouched, because a topic that only supports two angles worth researching
+  should get two rather than a padded third.
 - Then checks `confirm_rounds` against the cap (pure logic, no LLM needed
   for this check).
 - If `confirm_rounds` is under the cap: leaves `plan_confirmed` unset,
@@ -162,8 +164,9 @@ node so it is independently checkpointed and re-runnable.
   seed message, so the approved angles are a strong suggestion rather than a
   guarantee. The intended fix is for the supervisor to emit one
   `ConductResearch` call per angle on its first turn, skipping that turn's
-  LLM dispatch — which is why the angle count is pinned to
-  `ANGLES_PER_PLAN` and aligned with `MAX_CONCURRENT_RESEARCH_UNITS`.
+  LLM dispatch — which is why the angle count is capped by
+  `MAX_ANGLES_PER_PLAN` and aligned with `MAX_CONCURRENT_RESEARCH_UNITS`.
+  Note the supervisor must cope with fewer angles than the cap.
 - This is the node most likely to be expensive/long-running (and, if the
   sub-agent is itself a LangGraph subgraph with its own `interrupt()`
   calls, it is deliberately isolated from `ScopeTopic` / `ProposePlan` so

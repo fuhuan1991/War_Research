@@ -93,11 +93,20 @@ If you do need zod 4, the fix is to replace `z.custom<BaseMessage[]>()` with `z.
 - **There is no `research_brief`.** The confirmed `plan` (`{ final_topic, angles }`, schema in `src/plan.ts`) is the single artifact handed to the research phase. `planToBrief()` renders it to prose in the two places a string is needed: the `HumanMessage` seeding `supervisor_messages`, and the `{research_plan}` slot in `reportGeneratorPrompt`. Change the rendering in one place, not two.
 - Non-message fields that a node reads back must declare their default via `withLangGraph(..., { default })`, not zod's `.default()`. LangGraph builds its channels from the registry metadata, so a plain `z.number().default(0)` reads back as `undefined` inside a node and `state.counter + 1` silently becomes `NaN` (see the note at the top of `src/states/conversationState.ts`).
 
+Prompt templates are filled with `fillTemplate` (`src/prompts/fillTemplate.ts`), never a
+chain of `.replace("{slot}", value)`. Two reasons, both reachable from content the system
+does not control — the values include the user's own messages and Tavily-scraped page text:
+a string replacement expands `$&` / `$'` / `` $` `` (a single `$'` in a search result
+spliced the remainder of the prompt into itself), and chained calls re-scan text that
+earlier calls injected, so a value containing a later placeholder captured that
+substitution. `fillTemplate` substitutes every slot in one pass through a replacer
+function, which is immune to both. Regression tests in `tests/unit/fillTemplate.test.ts`.
+
 Synthetic control-flow `ToolMessage`s (e.g. `"<Research completed>"`) are wrapped in angle brackets by convention; `compression_node` filters these out via `.startsWith("<")` when extracting real `raw_notes`, so preserve that convention if you add new synthetic messages.
 
 ### The pre-research phase — scoping and plan confirmation (human-in-the-loop)
 
-The front half of `conversationAgent.ts` is a negotiation loop, not a one-shot classifier: scope the topic, propose a plan (final topic + `ANGLES_PER_PLAN` angles), and get explicit user approval before any research is spent.
+The front half of `conversationAgent.ts` is a negotiation loop, not a one-shot classifier: scope the topic, propose a plan (final topic + up to `MAX_ANGLES_PER_PLAN` angles), and get explicit user approval before any research is spent.
 
 ```
 START → scope_topic ⇄ ask_user          (nudge the user until the topic is workable)
@@ -124,7 +133,17 @@ START → scope_topic ⇄ ask_user          (nudge the user until the topic is w
 
 `conversationAgent.ts` node factories (`makeScopeTopicNode(llm)`, `makeProposePlanNode(llm)`, `makeClassifyFeedbackNode(llm)`, `makeReportGenerator(llm)`) take the model as a parameter so tests can inject a fake. The nodes with no LLM call — `askUserNode`, `confirmPlanNode`, `dispatchResearchNode` — are exported directly. `supervisorAgent.ts`/`researchAgent.ts` node factories instead import `fullModel`/`nanoModel` from `src/model.ts` directly at module scope; unit tests mock that whole module with `vi.mock("../../src/model.js", ...)` plus `vi.hoisted` (see `tests/unit/researchAgent.test.ts`) rather than injecting.
 
-**`tests/eval/conversationAgent.eval.test.ts` duplicates the graph wiring, and nothing guards the copy.** It exercises the real exported nodes with the real models, but hand-assembles its own `StateGraph` in which `dispatch_research` routes to `END` instead of to `supervisor_agent` → `report_generator` — that is what keeps approving a plan down to a handful of cheap calls instead of spawning `ANGLES_PER_PLAN` researchers and their Tavily searches. The cost of that trick is a second copy of the wiring: add, remove, rename or re-route a node in `conversationAgent.ts` and the eval keeps passing while silently testing a graph that no longer exists. Mirror every such change there. Run it alone with `npm run llm-test:conversation`.
+**`tests/eval/conversationAgent.eval.test.ts` duplicates the graph wiring, and nothing guards the copy.** It exercises the real exported nodes with the real models, but hand-assembles its own `StateGraph` in which `dispatch_research` routes to `END` instead of to `supervisor_agent` → `report_generator` — that is what keeps approving a plan down to a handful of cheap calls instead of spawning up to `MAX_ANGLES_PER_PLAN` researchers and their Tavily searches. The cost of that trick is a second copy of the wiring: add, remove, rename or re-route a node in `conversationAgent.ts` and the eval keeps passing while silently testing a graph that no longer exists. Mirror every such change there. Run it alone with `npm run llm-test:conversation`.
+
+The one block in that file which does **not** use the mirrored graph is the angle-quality
+suite at the bottom: it calls `makeProposePlanNode` directly against a seeded state, so it
+is immune to the drift above and costs one `fullModel` call per seed. It scores the angles
+`propose_plan` invents using the four LLM judges in `tests/eval/angleJudges.ts`. Read that
+file's header before touching a judge prompt — each judge is calibrated two-sided (a known-bad
+plan must be rejected *and* a known-good one accepted), and its header records which specific
+wordings were found to produce always-NO judges, polarity flips, and a judge that graded on a
+curve. Its thresholds were set from measurement and are deliberately strict enough to fail
+against the prompt that preceded them.
 
 ### Tavily search pipeline (`src/tools/tavilySearch.ts`)
 

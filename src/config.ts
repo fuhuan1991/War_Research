@@ -8,9 +8,13 @@ export const MAX_CLARIFY_ROUNDS = 3;
 // How many plans the user may reject before the next one is auto-accepted.
 export const MAX_CONFIRM_ROUNDS = 6;
 
-// How many angles a proposed plan carries. Each angle is intended to become one
-// ConductResearch call, so this is deliberately aligned with MAX_CONCURRENT_RESEARCH_UNITS.
-export const ANGLES_PER_PLAN = 3;
+// Upper bound on how many angles a proposed plan carries. Each angle is intended to become
+// one ConductResearch call, so this is deliberately aligned with MAX_CONCURRENT_RESEARCH_UNITS.
+//
+// It is a ceiling, not a quota: propose_plan may return fewer. A topic that only supports two
+// angles worth researching should get two, because a padded third is a wasted researcher and
+// a report section that says nothing.
+export const MAX_ANGLES_PER_PLAN = 3;
 
 // --- Research phase ---
 

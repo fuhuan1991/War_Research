@@ -29,7 +29,10 @@ Classify the reply as exactly one of:
 
 "angle" — The subject is still right; only the lines of inquiry need adjusting.
   Examples: "swap the logistics angle for a civilian perspective", "too many angles, focus
-  on command decisions", "add something about air power", "the second one is too narrow".
+  on command decisions", "add something about air power", "the second one is too narrow",
+  "just give me two angles".
+  A request for a different NUMBER of angles is angle-level feedback, not a rejection of
+  the topic.
 
 "topic" — The user is rejecting the subject itself, not how it will be approached.
   Examples: "this isn't the war I meant", "let's do Kursk instead", "actually I want to look

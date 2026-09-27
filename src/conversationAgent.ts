@@ -12,13 +12,14 @@ import {
   formatPlanWithQuestion,
   planToBrief,
 } from "./plan.js";
+import { fillTemplate } from "./prompts/fillTemplate.js";
 import { scopeTopicPrompt, scopeTopicSystemPrompt } from "./prompts/scopeTopicPrompt.js";
 import { proposePlanPrompt } from "./prompts/proposePlanPrompt.js";
 import { classifyFeedbackPrompt } from "./prompts/classifyFeedbackPrompt.js";
 import { reportGeneratorPrompt } from "./prompts/reportGeneratorPrompt.js";
 import { supervisorAgent } from "./supervisorAgent.js";
 import { fullModel, miniModel } from "./model.js";
-import { MAX_CLARIFY_ROUNDS, MAX_CONFIRM_ROUNDS, ANGLES_PER_PLAN } from "./config.js";
+import { MAX_CLARIFY_ROUNDS, MAX_CONFIRM_ROUNDS, MAX_ANGLES_PER_PLAN } from "./config.js";
 
 // ============================================================ SCHEMAS ============================================================
 
@@ -39,7 +40,7 @@ export const ProposePlanOutput = z.object({
     "A sharpened, unambiguous statement of what will be researched, bounded in time or geography where that is what makes it researchable."
   ),
   angles: z.array(z.string()).describe(
-    `Exactly ${ANGLES_PER_PLAN} distinct, non-overlapping lines of inquiry, each phrased as a specific question or investigative brief.`
+    `Between 1 and ${MAX_ANGLES_PER_PLAN} distinct, non-overlapping lines of inquiry, each phrased as a specific question or investigative brief. Use the full budget unless the topic genuinely does not support another distinct angle — include an angle only if it delivers something the others do not, but do not drop one merely to be concise.`
   ),
 });
 
@@ -86,9 +87,10 @@ export type ClassifyFeedbackModel = {
  */
 export const makeScopeTopicNode = (llm: ScopeTopicModel) =>
   async (state: ConversationStateType) => {
-    const prompt = scopeTopicPrompt
-      .replace("{messages}", getBufferString(state.messages))
-      .replace("{date}", new Date().toDateString());
+    const prompt = fillTemplate(scopeTopicPrompt, {
+      messages: getBufferString(state.messages),
+      date: new Date().toDateString(),
+    });
 
     const structuredModel = llm.withStructuredOutput(ScopeTopicOutput);
     const response = await structuredModel.invoke([
@@ -155,20 +157,28 @@ export const askUserNode = async (_state: ConversationStateType) => {
  */
 export const makeProposePlanNode = (llm: ProposePlanModel) =>
   async (state: ConversationStateType) => {
-    const prompt = proposePlanPrompt(ANGLES_PER_PLAN)
-      .replace("{topic}", state.rough_topic)
-      .replace("{messages}", getBufferString(state.messages))
-      .replace("{date}", new Date().toDateString());
+    const prompt = fillTemplate(proposePlanPrompt(MAX_ANGLES_PER_PLAN), {
+      topic: state.rough_topic,
+      messages: getBufferString(state.messages),
+      date: new Date().toDateString(),
+    });
 
     const structuredModel = llm.withStructuredOutput(ProposePlanOutput);
     const response = await structuredModel.invoke([new HumanMessage(prompt)]);
 
     const plan: PlanType = {
       final_topic: response.final_topic,
-      // The prompt and the schema both ask for exactly ANGLES_PER_PLAN, but neither is a
-      // constraint the model is bound by — and each surplus angle would become another
-      // researcher downstream. Enforce it here, as researchAgent already does for searches.
-      angles: response.angles.slice(0, ANGLES_PER_PLAN),
+      // MAX_ANGLES_PER_PLAN is a ceiling, and this is the only place it is actually
+      // enforced — the prompt and the schema both ask for it, but neither binds the model,
+      // and each surplus angle would become another researcher downstream. Mirrors what
+      // researchAgent already does for searches.
+      //
+      // Note the asymmetry: going OVER is capped here, but a plan with fewer angles is
+      // passed through untouched, including when the user asked for fewer. Honouring a
+      // smaller number is left to the prompt, since reading it out of free text needs an
+      // LLM. If the model ignores the request the user simply rejects the plan, and the
+      // replan sees the request again in `messages`.
+      angles: response.angles.slice(0, MAX_ANGLES_PER_PLAN),
     };
 
     // Round cap reached — auto-accept this plan rather than asking again.
@@ -219,11 +229,12 @@ export const confirmPlanNode = async (_state: ConversationStateType) => {
  */
 export const makeClassifyFeedbackNode = (llm: ClassifyFeedbackModel) =>
   async (state: ConversationStateType) => {
-    const prompt = classifyFeedbackPrompt
-      .replace("{messages}", getBufferString(state.messages))
-      .replace("{date}", new Date().toDateString())
-      .replace("{final_topic}", state.plan?.final_topic ?? "")
-      .replace("{angles}", formatAngles(state.plan?.angles ?? []));
+    const prompt = fillTemplate(classifyFeedbackPrompt, {
+      messages: getBufferString(state.messages),
+      date: new Date().toDateString(),
+      final_topic: state.plan?.final_topic ?? "",
+      angles: formatAngles(state.plan?.angles ?? []),
+    });
 
     const structuredModel = llm.withStructuredOutput(ClassifyFeedbackOutput);
     const response = await structuredModel.invoke([new HumanMessage(prompt)]);
@@ -285,10 +296,11 @@ export const makeReportGenerator = (llm: { invoke: (messages: HumanMessage[]) =>
   async (state: ConversationStateType) => {
     const findings = state.notes.join("\n");
 
-    const prompt = reportGeneratorPrompt
-      .replace("{research_plan}", state.plan ? planToBrief(state.plan) : "")
-      .replace("{findings}", findings)
-      .replace("{date}", new Date().toDateString());
+    const prompt = fillTemplate(reportGeneratorPrompt, {
+      research_plan: state.plan ? planToBrief(state.plan) : "",
+      findings,
+      date: new Date().toDateString(),
+    });
 
     const response = await llm.invoke([new HumanMessage(prompt)]) as AIMessage;
 

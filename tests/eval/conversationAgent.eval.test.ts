@@ -15,7 +15,8 @@ import {
 } from "../../src/conversationAgent.js";
 import { CONFIRM_QUESTION, planToBrief, PlanType } from "../../src/plan.js";
 import { fullModel, miniModel } from "../../src/model.js";
-import { ANGLES_PER_PLAN } from "../../src/config.js";
+import { scorePlan, logScore, type Score } from "./angleJudges.js";
+import { MAX_ANGLES_PER_PLAN } from "../../src/config.js";
 
 // =============================================================================
 // THE TEST GRAPH
@@ -239,9 +240,12 @@ describe("conversationAgent: vague start, clarified, planned, approved (real LLM
     const plan = afterClarification.values.plan;
     expect(plan).not.toBeNull();
     expect(plan!.final_topic.length).toBeGreaterThan(0);
-    expect(plan!.angles).toHaveLength(ANGLES_PER_PLAN);
+    // MAX_ANGLES_PER_PLAN is a ceiling, not a quota — propose_plan is free to return
+    // fewer when a topic does not support more, so this asserts a range, not a count.
+    expect(plan!.angles.length).toBeGreaterThanOrEqual(1);
+    expect(plan!.angles.length).toBeLessThanOrEqual(MAX_ANGLES_PER_PLAN);
     expect(plan!.angles.every((a) => a.trim().length > 0)).toBe(true);
-    expect(new Set(plan!.angles).size).toBe(ANGLES_PER_PLAN);
+    expect(new Set(plan!.angles).size).toBe(plan!.angles.length);
 
     // The plan is rendered into `messages` BEFORE confirm_plan pauses, and the
     // confirmation question is both the tail of that message and the payload.
@@ -292,19 +296,10 @@ Does the reply put at least one concrete option on the table, rather than merely
     expect(verdict).toBe("YES");
   }, 30_000);
 
-  it("the angles are distinct and on-topic (LLM-as-judge)", async () => {
-    const plan = afterClarification.values.plan!;
-    const { verdict, reason } = await judge(`A research agent was asked to research the Battle of Gettysburg, focusing on the third day. It proposed this plan:
-
-Topic: ${plan.final_topic}
-Angles:
-${plan.angles.map((a, i) => `${i + 1}. ${a}`).join("\n")}
-
-Are all of these angles genuinely about the Battle of Gettysburg, AND substantively distinct from one another (not restatements of the same line of inquiry)?`);
-
-    console.log(`  judge  | ${verdict} -- ${reason}`);
-    expect(verdict).toBe("YES");
-  }, 30_000);
+  // The former "angles are distinct and on-topic" judge lived here. It is superseded by
+  // the ANGLE QUALITY suite at the bottom of this file, which scores overlap per PAIR
+  // rather than asking one question about the whole set — see angleJudges.ts for why that
+  // distinction matters.
 });
 
 // =============================================================================
@@ -336,14 +331,14 @@ describe("conversationAgent: angle-level revision preserves the topic (real LLM)
     expect(afterOpener.next).toEqual(["confirm_plan"]);
     expect(afterOpener.values.clarify_rounds).toBe(0); // no nudge needed
     expect(afterOpener.values.confirm_rounds).toBe(0);
-    expect(afterOpener.values.plan!.angles).toHaveLength(ANGLES_PER_PLAN);
+    expect(afterOpener.values.plan!.angles.length).toBeLessThanOrEqual(MAX_ANGLES_PER_PLAN);
   });
 
   it("replans on angle feedback, spending exactly one confirmation round", () => {
     expect(afterAngleFeedback.next).toEqual(["confirm_plan"]);
     expect(afterAngleFeedback.values.confirm_rounds).toBe(1);
     expect(afterAngleFeedback.values.plan_confirmed).toBe(false);
-    expect(afterAngleFeedback.values.plan!.angles).toHaveLength(ANGLES_PER_PLAN);
+    expect(afterAngleFeedback.values.plan!.angles.length).toBeLessThanOrEqual(MAX_ANGLES_PER_PLAN);
 
     // The topic is the stable anchor across plan revisions: angle-level
     // feedback must leave rough_topic alone (only topic-level feedback clears it).
@@ -433,7 +428,8 @@ describe("conversationAgent: a bare specific topic goes straight to a plan (real
     const plan = afterBareTopic.values.plan;
     expect(plan).not.toBeNull();
     expect(plan!.final_topic.length).toBeGreaterThan(0);
-    expect(plan!.angles).toHaveLength(ANGLES_PER_PLAN);
+    expect(plan!.angles.length).toBeGreaterThanOrEqual(1);
+    expect(plan!.angles.length).toBeLessThanOrEqual(MAX_ANGLES_PER_PLAN);
     expect(afterBareTopic.values.plan_confirmed).toBe(false);
     expect(afterBareTopic.interruptValue).toBe(CONFIRM_QUESTION);
   });
@@ -487,4 +483,162 @@ Does the reply respect the user's request to wait, rather than pushing them to b
     console.log(`  judge  | ${verdict} -- ${reason}`);
     expect(verdict).toBe("YES");
   }, 30_000);
+});
+
+// =============================================================================
+// ANGLE QUALITY — is a proposed angle actually worth researching?
+// =============================================================================
+//
+// The scenarios above check that the pre-research loop ROUTES correctly. This block
+// checks the thing routing cannot check: whether the angles `propose_plan` invents are
+// any good. It is the regression test for the anti-generic rules in proposePlanPrompt.
+//
+// It does NOT drive the graph. It calls `makeProposePlanNode` directly against a seeded
+// state, which keeps it off the hand-copied wiring above (so it cannot drift from
+// production) and costs one fullModel call per seed. Nothing here spawns a supervisor, a
+// researcher or a Tavily search.
+//
+// Cost: 3 fullModel calls + ~30 miniModel judge calls per run.
+//
+// THE SEEDS are three topics chosen to be unalike — a battle, a condition of service, an
+// evaluative comparison. That is a sampling choice and nothing more: no code classifies
+// a user's question, and the rules in proposePlanPrompt are tests the model applies to
+// its own output rather than branches on the kind of question. Three seeds exist so a
+// change that only works for battles cannot pass. `rough_topic` is hand-written rather
+// than produced by scope_topic so the inputs stay fixed and the prompt is the only
+// variable across runs.
+//
+// THRESHOLDS were set from measurement, not chosen up front. Before the anti-generic
+// rules `specific` scored 1/9; after, it scored 8, 7, 9 and 7 out of 9 across four runs.
+// The aggregate floor of 6 sits below all of those and far above the old behaviour, so
+// this assertion would have FAILED against the previous prompt — which is the only thing
+// that makes it a real test rather than a rubber stamp. `researchable` and `distinct`
+// were already at ceiling before the change (8/9 and 9/9) and measured 8-9/9 after; their
+// floors are regression guards set one below measurement to absorb a single judge wobble.
+//
+// The variance is concentrated almost entirely in the WWII seed, which is much the
+// broadest question of the three: it has scored anywhere from 1/3 to 3/3 while Gettysburg
+// and Napoleon sit at 3/3. That is the breadth-versus-ceiling tension described in
+// proposePlanPrompt — with only three angles, a genuinely broad question cannot be covered
+// by three contested particulars, and the angle that stretches to span it is the one that
+// fails `specific`. Hence an aggregate threshold rather than a per-seed one.
+// =============================================================================
+
+const ANGLE_QUALITY_SEEDS = [
+  {
+    question: "I want to research the third day of the Battle of Gettysburg.",
+    rough_topic: "The third day of the Battle of Gettysburg, 3 July 1863",
+  },
+  {
+    question: "What was daily life like for soldiers in World War II?",
+    rough_topic: "What daily life was like for soldiers serving in World War II",
+  },
+  {
+    question: "Why was Napoleon better than other commanders?",
+    rough_topic: "Why Napoleon outperformed the other commanders of his era",
+  },
+];
+
+/** Minimal state for calling propose_plan on its own: it reads only these three fields. */
+const seedState = (question: string, rough_topic: string) =>
+  ({
+    messages: [new HumanMessage(question)],
+    ready_to_plan: true,
+    rough_topic,
+    pending_question: "",
+    plan: null,
+    plan_confirmed: false,
+    confirm_rounds: 0,
+    clarify_rounds: 0,
+    supervisor_messages: [],
+    raw_notes: [],
+    notes: [],
+    final_report: "",
+  }) as unknown as ConversationStateType;
+
+describe("propose_plan: the angles are worth researching (real LLM)", () => {
+  const plans: PlanType[] = [];
+  const scores: Score[] = [];
+
+  beforeAll(async () => {
+    const proposePlan = makeProposePlanNode(fullModel);
+
+    const results = await Promise.all(
+      ANGLE_QUALITY_SEEDS.map(async ({ question, rough_topic }) => {
+        const command = (await proposePlan(seedState(question, rough_topic))) as Command;
+        const plan = (command.update as { plan: PlanType }).plan;
+        return { plan, score: await scorePlan(plan.final_topic, question, plan.angles) };
+      }),
+    );
+
+    for (const [i, { plan, score }] of results.entries()) {
+      plans.push(plan);
+      scores.push(score);
+      console.log(`\n  seed   | "${ANGLE_QUALITY_SEEDS[i].question}"`);
+      console.log(`  topic  | ${plan.final_topic}`);
+      plan.angles.forEach((a, j) => console.log(`  angle ${j + 1}| ${a}`));
+      logScore(score);
+    }
+  }, 300_000);
+
+  const total = (pick: (s: Score) => { pass: number; of: number }) =>
+    scores.reduce((acc, s) => ({ pass: acc.pass + pick(s).pass, of: acc.of + pick(s).of }), {
+      pass: 0,
+      of: 0,
+    });
+
+  it("names particulars from inside the subject, not categories", () => {
+    // The headline assertion. Scored 1/9 before the anti-generic rules, 7-8/9 after.
+    const { pass, of } = total((s) => s.specific);
+    console.log(`  specific total | ${pass}/${of}`);
+    expect(pass).toBeGreaterThanOrEqual(6);
+  });
+
+  it("asks questions that have to be researched rather than looked up", () => {
+    // Regression guard: pushing for specificity tempts the model toward famous set
+    // pieces, which are the most written-about and so the most lookup-like.
+    const { pass, of } = total((s) => s.researchable);
+    console.log(`  researchable total | ${pass}/${of}`);
+    expect(pass).toBeGreaterThanOrEqual(8);
+  });
+
+  it("does not ask the same question twice", () => {
+    // Regression guard. Question-level overlap measured 9/9 both before and after, so
+    // this protects a property that is already good rather than chasing one that is not.
+    const { pass, of } = total((s) => s.distinct);
+    console.log(`  distinct total | ${pass}/${of}`);
+    expect(pass).toBeGreaterThanOrEqual(8);
+  });
+
+  it("still answers the question the user actually asked", () => {
+    // The over-narrowing guard — the one that catches specificity bought by retreating
+    // into one corner of the topic. It is what caught an intermediate version of the
+    // prompt whose angles were beautifully specific and all probed the same episode.
+    //
+    // Two of three rather than all three, because the Gettysburg seed flips roughly one
+    // run in three. That is not pure noise: its plan covers Lee's decision, the artillery
+    // ruse and Stuart's cavalry but not Culp's Hill, and on the runs it fails the judge
+    // says so — "does not comprehensively cover the entire third day". In other words it
+    // is partly measuring collective exhaustiveness, which this project deliberately does
+    // NOT target (at most three angles cannot exhaust a topic, and for open questions the
+    // notion is not even well defined — see TODO.md). Tightening the judge until that
+    // stopped would mean optimising for a goal we dropped on purpose.
+    //
+    // The guard still bites: during the over-narrowing regression this scored 1/3 and
+    // then 0/3, both of which fail the threshold below.
+    const passing = scores.filter((s) => s.intent.verdict === "YES").length;
+    scores.forEach((s, i) => {
+      if (s.intent.verdict !== "YES") {
+        console.log(`  intent NO | ${ANGLE_QUALITY_SEEDS[i].question}\n            | ${s.intent.reason}`);
+      }
+    });
+    expect(passing).toBeGreaterThanOrEqual(2);
+  });
+
+  it("never exceeds the angle ceiling, and may return fewer", () => {
+    for (const plan of plans) {
+      expect(plan.angles.length).toBeGreaterThanOrEqual(1);
+      expect(plan.angles.length).toBeLessThanOrEqual(MAX_ANGLES_PER_PLAN);
+    }
+  });
 });

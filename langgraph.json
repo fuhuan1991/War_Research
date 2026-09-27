@@ -3,8 +3,7 @@
   "graphs": {
     "conversationAgent": "./src/conversationAgent.ts:conversationGraph",
     "supervisorAgent": "./src/supervisorAgent.ts:supervisorAgent",
-    "researchAgent": "./src/researchAgent.ts:researchAgent",
-    "conversationAgentB": "./src/conversationAgentB.ts:conversationGraphB"
+    "researchAgent": "./src/researchAgent.ts:researchAgent"
   },
   "env": "./.env",
   "dependencies": ["."]

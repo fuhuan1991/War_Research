@@ -1,4 +1,4 @@
-export const proposePlanPrompt = `You are planning a war research task.
+export const proposePlanPrompt = (angles_per_plan: number) => `You are planning a war research task.
 
 The topic the user has agreed to is:
 <Topic>
@@ -30,12 +30,15 @@ Produce two things:
    - Stay faithful to what the user agreed to. Sharpening is not substituting.
 
 2. "angles" — the distinct lines of inquiry the research will pursue.
-   - Produce between 3 and 5 angles. Never more than 5. Each one will be dispatched to a
-     separate researcher, and the system runs a limited number of them concurrently, so a
-     long list does not get you a better report.
+   - Produce EXACTLY ${angles_per_plan} angles. Not fewer, not more. Each one is dispatched to
+     a separate researcher and the system runs exactly this many concurrently, so a longer
+     list does not get you a better report — any extra angles are discarded, not researched.
+   - Because there are only ${angles_per_plan}, make them count: together they should cover the
+     topic, not circle one corner of it.
    - Each angle must be independently researchable — a researcher should be able to work on
      it without waiting for the results of another angle.
-   - Angles must not overlap. If two angles would surface the same sources, merge them.
+   - Angles must not overlap. If two angles would surface the same sources, merge them and
+     use the freed slot for something the plan is missing.
    - Phrase each as a specific question or investigative brief, not a bare noun phrase.
      Good: "How did Soviet logistics along the Volga sustain the encirclement through winter?"
      Bad: "Logistics"

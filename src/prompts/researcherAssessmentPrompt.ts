@@ -18,6 +18,16 @@ Review all this information carefully before making your assessment.
     7. Make your outout concise.
 </Assessment Instructions>
 
+<Source Preferences>
+These carry over from the research plan the user approved — apply them when judging what to
+search for next and whether what you have is good enough:
+    1. Prefer primary and authoritative sources — official military histories, archival
+       records, after-action reports, and academic military history — over general-interest
+       summaries. Treat a claim that only appears in a low-quality source as unconfirmed.
+    2. If the assigned topic is written in a specific language, prioritize sources published
+       in that language alongside English-language ones.
+</Source Preferences>
+
 <Output>
 Always start your assessment with "<Assessment recorded>" on the first line.
 The assessment output should address:

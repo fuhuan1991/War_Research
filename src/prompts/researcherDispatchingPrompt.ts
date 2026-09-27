@@ -10,6 +10,8 @@ You have access to two tools and you MUST call one of them:
 1. **TavilySearch** — Search the web for information on a given query.
    - Write concise, keyword-focused queries of 5–10 words. Avoid full sentences or natural language phrases.
    - Lead with the most specific, high-signal terms (weapon models, battles, dates, technical terms).
+   - Write queries in the language of the assigned research topic, so that sources published
+     in that language are reachable.
    - You can call this tool multiple times in a single response to run searches in parallel.
 
 2. **CompleteSearch** — Signal that sufficient information has been gathered and research is complete.

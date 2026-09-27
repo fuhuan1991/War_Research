@@ -1,7 +1,7 @@
-export const reportGeneratorPrompt = `Based on all the research conducted, create a comprehensive, well-structured answer to the overall research brief:
-<Research Brief>
-{research_brief}
-</Research Brief>
+export const reportGeneratorPrompt = `Based on all the research conducted, create a comprehensive, well-structured answer to the research plan the user approved:
+<Research Plan>
+{research_plan}
+</Research Plan>
 
 CRITICAL: Make sure the answer is written in the same language as the human messages!
 For example, if the user's messages are in English, then MAKE SURE you write your response in English. If the user's messages are in Chinese, then MAKE SURE you write your entire response in Chinese.
@@ -14,11 +14,11 @@ Here are the findings from the research that you conducted:
 {findings}
 </Findings>
 
-Please create a detailed answer to the overall research brief that:
+Please create a detailed answer that addresses the approved plan — its topic and every one of its angles — and that:
 1. Is well-organized with proper headings (# for title, ## for sections, ### for subsections)
 2. Includes specific facts and insights from the research
 3. References relevant sources using [Title](URL) format
-4. Provides a balanced, thorough analysis. Be as comprehensive as possible, and include all information that is relevant to the overall research question. People are using you for deep research and will expect detailed, comprehensive answers.
+4. Provides a balanced, thorough analysis. Be as comprehensive as possible, and include all information that is relevant to the approved topic and angles. People are using you for deep research and will expect detailed, comprehensive answers.
 5. Includes a "Sources" section at the end with all referenced links
 
 You can structure your report in a number of different ways. Here are some examples:

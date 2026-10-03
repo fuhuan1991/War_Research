@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "cli": "npm run build && DOTENV_CONFIG_QUIET=true node dist/cli.js",
     "dev": "npx @langchain/langgraph-cli@latest dev",
     "test": "vitest run tests/unit",
     "llm-test": "vitest run tests/eval",

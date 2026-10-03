@@ -10,6 +10,7 @@ import { executeTavilySearch } from "./tools/tavilySearch.js";
 import { researcherAssessmentPrompt } from "./prompts/researcherAssessmentPrompt.js";
 import { researcherDispatchingPrompt } from "./prompts/researcherDispatchingPrompt.js";
 import { researcherCompressionSystemPrompt, researcherCompressionHumanMessage } from "./prompts/researcherCompressionPrompt.js";
+import { fillTemplate } from "./prompts/fillTemplate.js";
 
 // ============================================================ TOOLS ============================================================
 
@@ -41,24 +42,39 @@ const dispatchingModel = nanoModel.bindTools([TavilySearch, CompleteSearch], { t
 
 export const makeResearchNode = () =>
   async (state: ResearcherStateType) => {
+
+    const researchTopic = state.research_topic?.trim();
+    if (!researchTopic) {
+      throw new Error("researchAgent invoked without a research_topic");
+    }
+
     if (state.research_iterations >= MAX_RESEARCHER_TURNS) {
       return new Command({ goto: "compression_node" });
     }
 
     const messages = state.researcher_messages;
 
+    console.log("ResearchNode: iteration " + state.research_iterations)
+
     // Assess current situation
     const assessmentResponse: AIMessage = await fullModel.invoke([
-      new SystemMessage(researcherAssessmentPrompt),
+      new SystemMessage(fillTemplate(researcherAssessmentPrompt, { topic: researchTopic })),
       ...messages,
     ]) as AIMessage;
 
     // Dispatch search task or stop searching
     const dispatchingResponse: AIMessage = await dispatchingModel.invoke([
-      new SystemMessage(researcherDispatchingPrompt(MAX_RESEARCHER_TURNS, MAX_CONCURRENT_TAVILY_SEARCHES)),
+      new SystemMessage(
+        fillTemplate(
+          researcherDispatchingPrompt(MAX_RESEARCHER_TURNS, MAX_CONCURRENT_TAVILY_SEARCHES),
+          { topic: researchTopic },
+        ),
+      ),
       ...messages,
       assessmentResponse,
     ]) as AIMessage;
+
+    console.log("ResearchNode: assessment & decision completed");
 
     return new Command({
       goto: "research_tool_node",

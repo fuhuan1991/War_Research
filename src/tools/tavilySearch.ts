@@ -3,6 +3,8 @@ import { HumanMessage } from "@langchain/core/messages";
 import { summarizeWebpagePrompt } from "../prompts/summarizeWebpagePrompt.js";
 import { miniModel } from "../model.js";
 import { TAVILY_MAX_RESULTS } from "../config.js";
+import { PREFERRED_DOMAINS } from "./preferredDomains.js";
+import { DENIED_DOMAINS } from "./deniedDomains.js";
 
 const tavilyClient = tavily();
 
@@ -15,6 +17,24 @@ interface SearchResult {
   url: string;
   content: string;
   rawContent?: string;
+  score?: number;  // Tavily's own relevance score. 
+}
+
+interface ProcessedResult {
+  title: string;
+  content: string;
+  domain: string;
+  score?: number;
+}
+
+// The result's host without a leading "www.". Not a true registrable domain — that needs a
+// public-suffix list — but enough for the assessment to recognise who is making a claim.
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "unknown";
+  }
 }
 
 // Deduplicates by URL.
@@ -50,15 +70,15 @@ async function summarizeWebpage(rawContent: string): Promise<string> {
 // Runs summarization for all unique results in parallel.
 async function processResults(
   uniqueResults: Map<string, SearchResult>
-): Promise<Map<string, { title: string; content: string }>> {
-  const processed = new Map<string, { title: string; content: string }>();
+): Promise<Map<string, ProcessedResult>> {
+  const processed = new Map<string, ProcessedResult>();
 
   await Promise.all(
     Array.from(uniqueResults.entries()).map(async ([url, result]) => {
       const content = result.rawContent
         ? await summarizeWebpage(result.rawContent)
         : result.content;
-      processed.set(url, { title: result.title, content });
+      processed.set(url, { title: result.title, content, domain: hostOf(url), score: result.score });
     })
   );
 
@@ -66,7 +86,7 @@ async function processResults(
 }
 
 // Formats results into a numbered list of SOURCE blocks for the agent to read.
-function formatOutput(processed: Map<string, { title: string; content: string }>): string {
+function formatOutput(processed: Map<string, ProcessedResult>): string {
   if (processed.size === 0) {
     return "No valid search results found. Please try different search queries or use a different search API.";
   }
@@ -75,7 +95,9 @@ function formatOutput(processed: Map<string, { title: string; content: string }>
   let i = 1;
   for (const [url, result] of processed) {
     output += `\n\n--- SOURCE ${i}: ${result.title} ---\n`;
-    output += `URL: ${url}\n\n`;
+    output += `URL: ${url}\n`;
+    output += `DOMAIN: ${result.domain}\n`;
+    output += `RELEVANCE: ${typeof result.score === "number" ? result.score.toFixed(2) : "n/a"}\n\n`;
     output += `SUMMARY:\n${result.content}\n\n`;
     output += "-".repeat(80) + "\n";
     i++;
@@ -91,6 +113,13 @@ export async function executeTavilySearch(query: string): Promise<string> {
     response = await tavilyClient.search(query, {
       maxResults: TAVILY_MAX_RESULTS,
       includeRawContent: "text",
+      // "prefer" is a soft boost, verified against the live API: off-list results still
+      // come back, so this can never starve a query. Do not change it to "restrict" —
+      // measured, a 1453 query restricted to the whole prefer list returns nothing but
+      // Wikipedia and Britannica.
+      includeDomains: PREFERRED_DOMAINS,
+      includeDomainsMode: "prefer",
+      excludeDomains: DENIED_DOMAINS,
     });
   } catch (err) {
     return `Search failed: ${(err as Error).message}. Please try a different query.`;
@@ -107,16 +136,8 @@ export async function executeTavilySearch(query: string): Promise<string> {
   //     favicon: undefined
   //  }
 
-  console.log('--------ExecuteTavilySearch');
-  console.log("Query: " + response.query);
-  console.log("# of results: " + response.results.length);
-  response.results.forEach(result => {
-    console.log("-- " + result.title);
-    console.log("score: " + result.score);
-  });
-
   const uniqueResults = deduplicateResults(response.results);
-  console.log("# of deduped results: " + uniqueResults.size);
+
   const processed = await processResults(uniqueResults);
   return formatOutput(processed);
 }

@@ -114,6 +114,49 @@ describe("makeResearchNode", () => {
 
     expect(result.goto).toContain("research_tool_node");
   });
+
+  it("puts the research topic into both system prompts", async () => {
+    mockFullModelInvoke.mockResolvedValueOnce(new AIMessage("<Assessment recorded> ok"));
+    mockDispatchingModelInvoke.mockResolvedValueOnce(
+      makeAIMessage([{ name: "TavilySearch", id: "tc1", args: { query: "q" } }]),
+    );
+
+    const node = makeResearchNode();
+    await node(makeState({ research_topic: "Siege of Leningrad logistics" }));
+
+    const assessmentSystem = mockFullModelInvoke.mock.calls[0][0][0].content as string;
+    const dispatchSystem = mockDispatchingModelInvoke.mock.calls[0][0][0].content as string;
+
+    expect(assessmentSystem).toContain("Siege of Leningrad logistics");
+    expect(dispatchSystem).toContain("Siege of Leningrad logistics");
+  });
+
+  // fillTemplate deliberately leaves unknown slots untouched so a typo stays visible in the
+  // prompt. That makes a mistyped key degrade silently back to never passing the topic at
+  // all, which is the bug this whole change fixes — so assert the slot is really gone.
+  it("leaves no unfilled {topic} slot in either system prompt", async () => {
+    mockFullModelInvoke.mockResolvedValueOnce(new AIMessage("<Assessment recorded> ok"));
+    mockDispatchingModelInvoke.mockResolvedValueOnce(
+      makeAIMessage([{ name: "TavilySearch", id: "tc1", args: { query: "q" } }]),
+    );
+
+    const node = makeResearchNode();
+    await node(makeState());
+
+    const assessmentSystem = mockFullModelInvoke.mock.calls[0][0][0].content as string;
+    const dispatchSystem = mockDispatchingModelInvoke.mock.calls[0][0][0].content as string;
+
+    expect(assessmentSystem).not.toContain("{topic}");
+    expect(dispatchSystem).not.toContain("{topic}");
+  });
+
+  it("throws instead of researching blind when research_topic is blank", async () => {
+    const node = makeResearchNode();
+
+    await expect(node(makeState({ research_topic: "   " }))).rejects.toThrow(/research_topic/);
+    expect(mockFullModelInvoke).not.toHaveBeenCalled();
+    expect(mockDispatchingModelInvoke).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -19,6 +19,8 @@ vi.mock("../../src/config.js", () => ({
 }));
 
 import { executeTavilySearch } from "../../src/tools/tavilySearch.js";
+import { PREFERRED_DOMAINS } from "../../src/tools/preferredDomains.js";
+import { DENIED_DOMAINS } from "../../src/tools/deniedDomains.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -241,4 +243,132 @@ describe("formatOutput — structure", () => {
     expect(result).toContain("URL: https://example.com/p2");
     expect(result).toContain("SUMMARY:");
   });
+});
+
+// ---------------------------------------------------------------------------
+// formatOutput — provenance signals
+//
+// DOMAIN and RELEVANCE exist so researcherAssessmentPrompt's <Source Preferences> block has
+// something to weigh. Before this, the prompt asked the model to judge source quality while
+// executeTavilySearch discarded the only quality signal Tavily returns.
+// ---------------------------------------------------------------------------
+
+describe("formatOutput — provenance signals", () => {
+  it("emits DOMAIN and RELEVANCE for each source", async () => {
+    mockSearch.mockResolvedValueOnce({
+      query: "kursk",
+      results: [
+        makeTavilyResult({ url: "https://www.tankmuseum.org/article/x", title: "Tank" , score: 0.84 }),
+      ],
+    });
+
+    const result = await executeTavilySearch("kursk");
+
+    // "www." is stripped so the same site reads identically however Tavily returns it.
+    expect(result).toContain("DOMAIN: tankmuseum.org");
+    expect(result).toContain("RELEVANCE: 0.84");
+  });
+
+  it("prints RELEVANCE as n/a rather than crashing when Tavily omits the score", async () => {
+    mockSearch.mockResolvedValueOnce({
+      query: "kursk",
+      results: [makeTavilyResult({ url: "https://example.com/p", score: undefined })],
+    });
+
+    const result = await executeTavilySearch("kursk");
+
+    expect(result).toContain("RELEVANCE: n/a");
+    expect(result).toContain("DOMAIN: example.com");
+  });
+
+  it("falls back to 'unknown' for a malformed URL instead of throwing", async () => {
+    mockSearch.mockResolvedValueOnce({
+      query: "kursk",
+      results: [makeTavilyResult({ url: "not-a-url" })],
+    });
+
+    const result = await executeTavilySearch("kursk");
+
+    expect(result).toContain("DOMAIN: unknown");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// domain policy — what gets sent to Tavily
+// ---------------------------------------------------------------------------
+
+describe("domain policy", () => {
+  it("steers with includeDomains in soft 'prefer' mode and hard-excludes the denylist", async () => {
+    mockSearch.mockResolvedValueOnce({ query: "q", results: [] });
+
+    await executeTavilySearch("q");
+
+    const [, options] = mockSearch.mock.calls[0];
+    expect(options.includeDomains).toEqual(PREFERRED_DOMAINS);
+    expect(options.excludeDomains).toEqual(DENIED_DOMAINS);
+    // "restrict" would make the prefer list a filter. Measured against the live API, a 1453
+    // query restricted to the whole list returns only Wikipedia and Britannica — so this
+    // assertion is the guard against a one-word change that silently starves sparse topics.
+    expect(options.includeDomainsMode).toBe("prefer");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// list hygiene
+//
+// The prefer list was assembled by merging two independently-curated lists, which is exactly
+// how duplicates, stray "www." prefixes and full URLs creep in. These are static assertions
+// over data, so they cost nothing to run.
+// ---------------------------------------------------------------------------
+
+describe("domain list hygiene", () => {
+  const lists: [string, string[]][] = [
+    ["PREFERRED_DOMAINS", PREFERRED_DOMAINS],
+    ["DENIED_DOMAINS", DENIED_DOMAINS],
+  ];
+
+  for (const [name, list] of lists) {
+    it(`${name} is non-empty and free of duplicates`, () => {
+      expect(list.length).toBeGreaterThan(0);
+      expect(new Set(list).size).toBe(list.length);
+    });
+
+    it(`${name} holds bare lowercase hostnames — no scheme, path, "www." or whitespace`, () => {
+      for (const domain of list) {
+        expect(domain).toBe(domain.toLowerCase().trim());
+        expect(domain).not.toMatch(/^https?:\/\//);
+        expect(domain).not.toMatch(/^www\./);
+        expect(domain).not.toContain("/");
+        expect(domain).toMatch(/^[a-z0-9.-]+\.[a-z]{2,}$/);
+      }
+    });
+  }
+
+  it("keeps the two lists disjoint, so nothing is both preferred and denied", () => {
+    const denied = new Set(DENIED_DOMAINS);
+    expect(PREFERRED_DOMAINS.filter((d) => denied.has(d))).toEqual([]);
+  });
+
+  it("includes en.wikipedia.org, which sparse topics depend on", () => {
+    // Measured: restricting a 1453 query to the whole prefer list returns Wikipedia and
+    // Britannica alone. Dropping it would hand those topics to forums and video pages.
+    expect(PREFERRED_DOMAINS).toContain("en.wikipedia.org");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fiction exclusion
+// ---------------------------------------------------------------------------
+
+describe("fiction exclusion", () => {
+  // These are not merely low-authority — they are invented history on the same topics the
+  // agent researches, and a real run cited one as *confirming* a Venetian naval judgement
+  // while its DOMAIN and a RELEVANCE of 0.55 were visible in the prompt. Prompt guidance did
+  // not catch it, so the exclusion has to be mechanical and has to stay.
+  it.each(["alternatehistory.com", "thisdayinalternatehistory.blogspot.com", "fandom.com"])(
+    "denies %s",
+    (domain) => {
+      expect(DENIED_DOMAINS).toContain(domain);
+    },
+  );
 });

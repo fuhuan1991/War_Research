@@ -286,9 +286,12 @@ export const dispatchResearchNode = async (state: ConversationStateType) => {
     // Unreachable by construction: every edge into this node sets `plan` first.
     throw new Error("dispatch_research was reached without a confirmed plan");
   }
+  
+  const researchBrief = planToBrief(state.plan);
+  console.log("Research Brief: " + researchBrief);
 
   return {
-    supervisor_messages: [new HumanMessage(planToBrief(state.plan))],
+    supervisor_messages: [new HumanMessage(researchBrief)],
   };
 };
 
@@ -302,8 +305,9 @@ export const makeReportGenerator = (llm: { invoke: (messages: HumanMessage[]) =>
       date: new Date().toDateString(),
     });
 
+    console.log("Start generating final report");
     const response = await llm.invoke([new HumanMessage(prompt)]) as AIMessage;
-
+    console.log("Final report completed");
     return {
       final_report: response.content as string,
       messages: [new AIMessage("Here is the final report:\n\n" + response.content)],

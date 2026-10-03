@@ -42,6 +42,7 @@ const dispatchingModel = nanoModel.bindTools([ConductResearch, CompleteResearch]
 export const makeSupervisorNode = () =>
   async (state: SupervisorStateType) => {
     const supervisorMessages = state.supervisor_messages;
+    console.log("SupervisorNode: iteration " + state.research_iterations)
 
     // Assess current situation 
     const assessmentResponse: AIMessage = await fullModel.invoke([
@@ -55,6 +56,8 @@ export const makeSupervisorNode = () =>
       ...supervisorMessages,
       assessmentResponse,
     ]) as AIMessage;
+
+    console.log("SupervisorNode: assessment & decision completed");
 
     return new Command({
       goto: "supervisor_tool_node",

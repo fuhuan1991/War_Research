@@ -62,7 +62,10 @@ export const makeResearchNode = () =>
       ...messages,
     ]) as AIMessage;
 
-    // Dispatch search task or stop searching
+    // Dispatch search task or stop searching.
+    // Deliberately NOT given `...messages`. This model only has to name a tool, and the
+    // assessment above already states the decision and the next query, so the history buys
+    // it nothing while being charged for on every turn.
     const dispatchingResponse: AIMessage = await dispatchingModel.invoke([
       new SystemMessage(
         fillTemplate(
@@ -70,7 +73,7 @@ export const makeResearchNode = () =>
           { topic: researchTopic },
         ),
       ),
-      ...messages,
+      new HumanMessage(researchTopic),
       assessmentResponse,
     ]) as AIMessage;
 

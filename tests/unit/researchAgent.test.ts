@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, BaseMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -156,6 +156,53 @@ describe("makeResearchNode", () => {
     await expect(node(makeState({ research_topic: "   " }))).rejects.toThrow(/research_topic/);
     expect(mockFullModelInvoke).not.toHaveBeenCalled();
     expect(mockDispatchingModelInvoke).not.toHaveBeenCalled();
+  });
+
+  // The dispatch model is deliberately given no message history: it only has to name a tool,
+  // and the assessment it receives already states the decision. Spreading `...messages` into
+  // it cost 157k nano input tokens across six measured traces to produce 711 output tokens.
+  // Nothing else in this file pins that call's message array, so without this test the spread
+  // can come back unnoticed and silently restore the cost.
+  it("sends the dispatch model only the system prompt, the topic and the assessment", async () => {
+    const assessmentMsg = new AIMessage("<Assessment recorded> search for the next gap");
+    mockFullModelInvoke.mockResolvedValueOnce(assessmentMsg);
+    mockDispatchingModelInvoke.mockResolvedValueOnce(
+      makeAIMessage([{ name: "TavilySearch", id: "tc1", args: { query: "q" } }]),
+    );
+
+    // Long enough that a spread would be unmistakable.
+    const history = [
+      new HumanMessage("Battle of Stalingrad"),
+      new AIMessage("<Assessment recorded> an earlier assessment"),
+      makeAIMessage([{ name: "TavilySearch", id: "old-1", args: { query: "an earlier query" } }]),
+      new ToolMessage({
+        content: "--- SOURCE 1: an earlier search result ---",
+        name: "TavilySearch",
+        tool_call_id: "old-1",
+      }),
+    ];
+
+    const node = makeResearchNode();
+    await node(makeState({ researcher_messages: history, research_iterations: 1 }));
+
+    const dispatchMessages: BaseMessage[] = mockDispatchingModelInvoke.mock.calls[0][0];
+
+    expect(dispatchMessages).toHaveLength(3);
+    expect(dispatchMessages[0].content).toContain("Battle of Stalingrad");  // system prompt
+    expect(dispatchMessages[1].content).toBe("Battle of Stalingrad");       // topic, rebuilt
+    expect(dispatchMessages[2]).toBe(assessmentMsg);                        // the assessment itself
+
+    // Nothing from the history leaked in.
+    const serialised = JSON.stringify(dispatchMessages.map((m) => m.content));
+    expect(serialised).not.toContain("an earlier assessment");
+    expect(serialised).not.toContain("an earlier search result");
+    expect(dispatchMessages.some((m) => m.getType() === "tool")).toBe(false);
+
+    // The assessment model, by contrast, must still receive the whole history — this change
+    // is about what the dispatch call reads, not about trimming state.
+    const assessmentMessages: BaseMessage[] = mockFullModelInvoke.mock.calls[0][0];
+    expect(assessmentMessages).toHaveLength(1 + history.length);
+    expect(assessmentMessages.some((m) => m.getType() === "tool")).toBe(true);
   });
 });
 

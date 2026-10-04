@@ -1,3 +1,9 @@
+// Note on what is deliberately absent: this prompt used to forbid "redundant TavilySearch
+// calls on queries already covered by prior searches". The dispatch model is no longer given
+// the message history (see researchAgent.ts), so it cannot see prior queries and the rule was
+// unenforceable from where it sits. Avoiding repeat queries is the assessment model's job — it
+// does read the history, and it names the next query. Do not restore the rule here without
+// also passing the prior queries in.
 export const researcherDispatchingPrompt = (max_reseatcher_turns: number, max_concurrent_tavily_search: number) => `You are a researcher making a tool-calling decision for a sub-topic of a war and military history research project.
 
 This is the sub-topic being researched. Your queries must target it:
@@ -36,6 +42,5 @@ Based on the most recent assessment:
 </Parallel Research Rules>
 
 <Hard Limits>
-- Do not make redundant TavilySearch calls on queries already covered by prior searches.
 - Always call CompleteSearch after ${max_reseatcher_turns} total research iterations, even if research feels incomplete.
 </Hard Limits>`;

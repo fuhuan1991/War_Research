@@ -119,8 +119,16 @@ export const makeResearchToolNode = () =>
     const allowedCalls = searchCalls.slice(0, MAX_CONCURRENT_TAVILY_SEARCHES);
     const skippedCalls = searchCalls.slice(MAX_CONCURRENT_TAVILY_SEARCHES);
 
+    // One Set for the whole turn, seeded with every URL earlier turns already summarised.
+    // Passing the same instance to all of this turn's parallel searches is what stops two of
+    // them from both summarising a page they both returned; the seed is what stops this turn
+    // from re-summarising an earlier turn's page. `prior` is kept to diff against, because
+    // seen_urls appends and must receive only what is new.
+    const prior = new Set(state.seen_urls);
+    const seen = new Set(prior);
+
     const results = await Promise.all(
-      allowedCalls.map((tc) => executeTavilySearch(tc.args.query as string))
+      allowedCalls.map((tc) => executeTavilySearch(tc.args.query as string, seen))
     );
 
     const toolMessages: ToolMessage[] = [
@@ -144,6 +152,9 @@ export const makeResearchToolNode = () =>
       goto: "research_node",
       update: {
         researcher_messages: toolMessages,
+        // Only what this turn added: the channel's reducer appends, so writing the whole union
+        // would re-add every earlier URL and grow the array quadratically.
+        seen_urls: [...seen].filter((url) => !prior.has(url)),
       },
     });
   };

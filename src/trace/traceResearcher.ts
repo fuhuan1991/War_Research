@@ -186,6 +186,7 @@ type ResearcherSnapshot = {
   researcher_messages?: BaseMessage[];
   compressed_research?: string;
   raw_notes?: string[];
+  seen_urls?: string[];
   research_iterations?: number;
 };
 
@@ -195,6 +196,8 @@ const encodeState = (state: ResearcherSnapshot) => ({
   compressed_research_chars: charsOf(state.compressed_research ?? ""),
   raw_notes_count: state.raw_notes?.length ?? 0,
   raw_notes_chars: (state.raw_notes ?? []).map((n) => n.length),
+  seen_urls_count: state.seen_urls?.length ?? 0,
+  seen_urls: state.seen_urls ?? [],
   researcher_messages: (state.researcher_messages ?? []).map(encodeMessage),
 });
 
@@ -278,7 +281,7 @@ type TurnSummary = {
   assessmentChars: number;
   queries: string[];
   completeSearch: boolean;
-  results: { name: string; chars: number; sources: number; skipped: boolean }[];
+  results: { name: string; chars: number; sources: number; omitted: number; skipped: boolean }[];
 };
 
 /**
@@ -327,6 +330,10 @@ const summariseTurns = (messages: BaseMessage[]): TurnSummary[] => {
         name: (message as { name?: string }).name ?? "?",
         chars: content.length,
         sources: (content.match(/--- SOURCE /g) ?? []).length,
+        // Pages the run-level dedupe withheld because an earlier search already returned them.
+        // With dedupe working this should be non-zero exactly where queries overlap, and the
+        // SOURCE count should never double-count a page across turns.
+        omitted: Number((content.match(/ALREADY RETRIEVED — (\d+) result/) ?? [])[1] ?? 0),
         skipped: content.startsWith("<Search skipped"),
       });
     }
@@ -355,21 +362,29 @@ const buildSummary = (
     `**Messages in final state:** ${state.researcher_messages?.length ?? 0}`,
     `**compressed_research:** ${charsOf(state.compressed_research ?? "")} chars`,
     `**raw_notes:** ${state.raw_notes?.length ?? 0} entries, ${(state.raw_notes ?? []).reduce((s, n) => s + n.length, 0)} chars`,
+    // The acceptance check for run-level URL dedupe: every SOURCE block emitted should be a
+    // page summarised for the first time, so these two numbers should agree. SOURCE blocks
+    // exceeding unique pages means a page was summarised twice — except where a summarisation
+    // failed, which releases its URL so a later search may legitimately retry it.
+    `**Unique pages summarised (seen_urls):** ${state.seen_urls?.length ?? 0}`,
+    `**SOURCE blocks emitted:** ${turns.reduce((s, t) => s + t.results.reduce((a, r) => a + r.sources, 0), 0)}`,
+    `**Withheld as already retrieved:** ${turns.reduce((s, t) => s + t.results.reduce((a, r) => a + r.omitted, 0), 0)}`,
     meta.error ? `**Run ended with an error:** ${meta.error}` : "",
     "",
     "## Per-turn behaviour",
     "",
-    "| Turn | Assessment chars | Queries | CompleteSearch | Tool msgs | Sources | Result chars |",
-    "|---|---|---|---|---|---|---|",
+    "| Turn | Assessment chars | Queries | CompleteSearch | Tool msgs | Sources | Omitted | Result chars |",
+    "|---|---|---|---|---|---|---|---|",
   ];
 
   for (const turn of turns) {
     const sources = turn.results.reduce((s, r) => s + r.sources, 0);
+    const omitted = turn.results.reduce((s, r) => s + r.omitted, 0);
     const chars = turn.results.reduce((s, r) => s + r.chars, 0);
     const skipped = turn.results.filter((r) => r.skipped).length;
     parts.push(
       `| ${turn.n} | ${turn.assessmentChars} | ${turn.queries.length}${skipped ? ` (+${skipped} skipped)` : ""} ` +
-        `| ${turn.completeSearch ? "yes" : "no"} | ${turn.results.length} | ${sources} | ${chars} |`,
+        `| ${turn.completeSearch ? "yes" : "no"} | ${turn.results.length} | ${sources} | ${omitted} | ${chars} |`,
     );
   }
 

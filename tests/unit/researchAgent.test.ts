@@ -40,6 +40,7 @@ function makeState(overrides: Partial<{
   research_iterations: number;
   compressed_research: string;
   raw_notes: string[];
+  seen_urls: string[];
 }> = {}) {
   return {
     researcher_messages: [],
@@ -47,6 +48,7 @@ function makeState(overrides: Partial<{
     research_iterations: 0,
     compressed_research: "",
     raw_notes: [],
+    seen_urls: [],
     ...overrides,
   };
 }
@@ -261,8 +263,8 @@ describe("makeResearchToolNode", () => {
     const result = await node(makeState({ researcher_messages: [lastMsg] }));
 
     expect(mockTavilySearch).toHaveBeenCalledTimes(2);
-    expect(mockTavilySearch).toHaveBeenCalledWith("query A");
-    expect(mockTavilySearch).toHaveBeenCalledWith("query B");
+    expect(mockTavilySearch).toHaveBeenCalledWith("query A", expect.any(Set));
+    expect(mockTavilySearch).toHaveBeenCalledWith("query B", expect.any(Set));
     expect(result.goto).toContain("research_node");
 
     const toolMessages: ToolMessage[] = result.update.researcher_messages;
@@ -292,6 +294,90 @@ describe("makeResearchToolNode", () => {
     expect(toolMessages).toHaveLength(5);
     expect(toolMessages[4].content).toBe("<Search skipped: concurrent search limit reached>");
     expect(toolMessages[4].tool_call_id).toBe("tc-5");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// makeResearchToolNode — run-level URL dedupe
+//
+// The node owns the seen-URL set for a turn: it seeds one from state and hands that single
+// instance to every parallel search, then writes back only what the turn added. Both halves
+// matter and neither fails loudly if broken — a fresh set per call silently restores
+// intra-turn duplication, and writing the whole union silently grows state quadratically
+// because the channel's reducer appends.
+// ---------------------------------------------------------------------------
+
+describe("makeResearchToolNode — run-level URL dedupe", () => {
+  it("seeds the set from seen_urls so a later turn does not re-summarise an earlier turn's page", async () => {
+    mockTavilySearch.mockResolvedValue("result");
+
+    const lastMsg = makeAIMessage([
+      { name: "TavilySearch", id: "tc-1", args: { query: "query A" } },
+    ]);
+
+    const node = makeResearchToolNode();
+    await node(makeState({
+      researcher_messages: [lastMsg],
+      seen_urls: ["https://example.com/earlier"],
+    }));
+
+    const seen = mockTavilySearch.mock.calls[0][1] as Set<string>;
+    expect(seen.has("https://example.com/earlier")).toBe(true);
+  });
+
+  it("hands every parallel search the same set instance, so two of them cannot both summarise one page", async () => {
+    mockTavilySearch.mockResolvedValue("result");
+
+    const lastMsg = makeAIMessage([
+      { name: "TavilySearch", id: "tc-1", args: { query: "query A" } },
+      { name: "TavilySearch", id: "tc-2", args: { query: "query B" } },
+      { name: "TavilySearch", id: "tc-3", args: { query: "query C" } },
+    ]);
+
+    const node = makeResearchToolNode();
+    await node(makeState({ researcher_messages: [lastMsg] }));
+
+    const sets = mockTavilySearch.mock.calls.map((c: unknown[]) => c[1]);
+    expect(sets).toHaveLength(3);
+    // Identity, not equality: a fresh empty set per call would pass a deep-equality check and
+    // leave the intra-turn duplication exactly as it was.
+    expect(sets[1]).toBe(sets[0]);
+    expect(sets[2]).toBe(sets[0]);
+  });
+
+  it("writes back only the URLs the turn added, not the whole union", async () => {
+    // Mimics the real executeTavilySearch, which claims each page it summarises.
+    mockTavilySearch.mockImplementation(async (query: string, seen: Set<string>) => {
+      seen.add(`https://example.com/${query}`);
+      return "result";
+    });
+
+    const lastMsg = makeAIMessage([
+      { name: "TavilySearch", id: "tc-1", args: { query: "new-a" } },
+      { name: "TavilySearch", id: "tc-2", args: { query: "new-b" } },
+    ]);
+
+    const node = makeResearchToolNode();
+    const result = await node(makeState({
+      researcher_messages: [lastMsg],
+      seen_urls: ["https://example.com/old"],
+    }));
+
+    expect(result.update.seen_urls).toEqual([
+      "https://example.com/new-a",
+      "https://example.com/new-b",
+    ]);
+    expect(result.update.seen_urls).not.toContain("https://example.com/old");
+  });
+
+  it("writes no seen_urls on the CompleteSearch path, where nothing was searched", async () => {
+    const lastMsg = makeAIMessage([{ name: "CompleteSearch", id: "tc-1", args: {} }]);
+
+    const node = makeResearchToolNode();
+    const result = await node(makeState({ researcher_messages: [lastMsg] }));
+
+    expect(result.goto).toContain("compression_node");
+    expect(result.update.seen_urls).toBeUndefined();
   });
 });
 

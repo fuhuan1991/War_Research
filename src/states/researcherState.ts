@@ -11,6 +11,10 @@ export const ResearcherState = z.object({
     reducer: { fn: (a: string[], b: string[]) => [...a, ...b] },
     default: () => [],
   }),
+  seen_urls: withLangGraph(z.array(z.string()), {
+    reducer: { fn: (a: string[], b: string[]) => [...a, ...b] },
+    default: () => [],
+  }),
   research_iterations: withLangGraph(z.number(), { default: () => 0 }),
 });
 

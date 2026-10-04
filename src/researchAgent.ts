@@ -159,21 +159,51 @@ export const makeResearchToolNode = () =>
     });
   };
 
+/**
+ * Pairs every TavilySearch tool_call_id with the query it carried, so each block of results
+ * can be labelled with the search that produced it. Built over the whole message list rather
+ * than the last turn's, because a run's results span several dispatch messages.
+ */
+const queriesById = (messages: BaseMessage[]): Map<string, string> => {
+  const byId = new Map<string, string>();
+
+  for (const message of messages) {
+    if (message._getType() !== "ai") continue;
+    for (const call of (message as AIMessage).tool_calls ?? []) {
+      if (call.name !== "TavilySearch" || !call.id) continue;
+      byId.set(call.id, String((call.args as { query?: unknown }).query ?? ""));
+    }
+  }
+
+  return byId;
+};
+
 export const makeCompressionNode = () =>
   async (state: ResearcherStateType) => {
     const messages = state.researcher_messages;
 
+    const searchResults = messages
+      .filter((m: BaseMessage): m is ToolMessage => m._getType() === "tool")
+      // Synthetic control messages use the "<...>" convention; real search results never start with "<"
+      .filter((m: ToolMessage) => !(m.content as string).startsWith("<"));
+
+    const rawNotes = searchResults.map((m) => m.content as string);
+
+    // The model is handed the search results as one rendered block rather than the message list
+    const byId = queriesById(messages);
+    const searchRecord = searchResults.length
+      ? searchResults
+          .map((m, i) => {
+            const query = byId.get(m.tool_call_id) ?? "(query not recorded)";
+            return `--- SEARCH ${i + 1} — query: ${query} ---\n\n${m.content as string}`;
+          })
+          .join("\n\n")
+      : "(No search results were gathered on this topic.)";
+
     const response = await fullModel.invoke([
       new SystemMessage(researcherCompressionSystemPrompt),
-      ...messages,
-      new HumanMessage(researcherCompressionHumanMessage(state.research_topic)),
+      new HumanMessage(researcherCompressionHumanMessage(state.research_topic, searchRecord)),
     ]) as AIMessage;
-
-    const rawNotes = messages
-      .filter((m: BaseMessage): m is ToolMessage => m._getType() === "tool")
-      .map((m: ToolMessage) => m.content as string)
-      // Synthetic control messages use the "<...>" convention; real search results never start with "<"
-      .filter((content) => !content.startsWith("<"));
 
     return {
       compressed_research: response.content as string,

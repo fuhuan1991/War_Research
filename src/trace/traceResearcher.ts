@@ -16,7 +16,10 @@
  * executeTavilySearch: those never enter `researcher_messages`, so the stream cannot see them.
  *
  * Run with `npm run trace:researcher` (append `-- "your topic"` to override the default).
- * Output lands in a timestamped folder under traces/, which is gitignored.
+ * Output lands in a folder under traces/ named for the start time and the pid, which is
+ * gitignored. The pid is in the name because two runs launched together get the same
+ * ISO timestamp to the millisecond — observed — and then share one directory, which
+ * interleaves updates.jsonl and leaves whichever run finishes last owning summary.md.
  */
 import "dotenv/config";
 
@@ -464,7 +467,7 @@ async function main() {
   const { researchAgent } = await import("../researchAgent.js");
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const runDir = join(TRACE_ROOT, `${stamp}-researcher`);
+  const runDir = join(TRACE_ROOT, `${stamp}-pid${process.pid}-researcher`);
   mkdirSync(runDir, { recursive: true });
 
   const updatesPath = join(runDir, "updates.jsonl");

@@ -1,5 +1,8 @@
 export const TAVILY_MAX_RESULTS = 4;
 
+// Hard ceiling on the raw page text handed to miniModel for summarisation.
+export const MAX_RAW_CONTENT_CHARS = 200_000;
+
 // --- Pre-research phase (scoping and plan confirmation) ---
 
 // How many suggestive nudges the user gets before the graph gives up and ends.

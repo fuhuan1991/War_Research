@@ -14,11 +14,16 @@ vi.mock("../../src/model.js", () => ({
   miniModel: { invoke: mockInvoke },
 }));
 
+// Mirrors the real values. This mock replaces the whole module, so a constant missing
+// here reads as undefined inside tavilySearch.ts — and `slice(0, undefined)` returns the
+// entire string, which would turn the raw-content cap into a silent no-op under test.
 vi.mock("../../src/config.js", () => ({
   TAVILY_MAX_RESULTS: 4,
+  MAX_RAW_CONTENT_CHARS: 200_000,
 }));
 
 import { executeTavilySearch } from "../../src/tools/tavilySearch.js";
+import { MAX_RAW_CONTENT_CHARS } from "../../src/config.js";
 import { PREFERRED_DOMAINS } from "../../src/tools/preferredDomains.js";
 import { DENIED_DOMAINS } from "../../src/tools/deniedDomains.js";
 
@@ -218,6 +223,75 @@ describe("summarizeWebpage — fallback paths", () => {
 
     expect(mockInvoke).not.toHaveBeenCalled();
     expect(result).toContain("Just the snippet.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// summarizeWebpage — oversized pages
+//
+// Tavily returns the full extracted text of a result, and a result can be a whole book.
+// These pin the ceiling that stops that, and the marker that admits to it.
+// ---------------------------------------------------------------------------
+
+describe("summarizeWebpage — oversized pages", () => {
+  // Head and tail markers rather than a length assertion: this states the semantics the
+  // cap is for — the start of the page survives, the overflow does not.
+  const HEAD = "HEAD_OF_PAGE";
+  const TAIL = "TAIL_PAST_THE_CAP";
+  const oversized = HEAD + "a".repeat(MAX_RAW_CONTENT_CHARS) + TAIL;
+
+  function searchReturning(rawContent: string) {
+    mockSearch.mockResolvedValueOnce({
+      query: "oversized",
+      results: [makeTavilyResult({ url: "https://example.com/book.pdf", rawContent })],
+    });
+    mockInvoke.mockResolvedValueOnce(makeModelResponse("A summary.", "An excerpt."));
+  }
+
+  it("cuts page text at MAX_RAW_CONTENT_CHARS before it reaches the model", async () => {
+    searchReturning(oversized);
+
+    await executeTavilySearch("oversized");
+
+    const prompt = mockInvoke.mock.calls[0][0][0].content as string;
+    expect(prompt).toContain(HEAD);
+    expect(prompt).not.toContain(TAIL);
+  });
+
+  it("hands the model exactly MAX_RAW_CONTENT_CHARS of page text", async () => {
+    searchReturning(oversized);
+    await executeTavilySearch("oversized");
+    const cappedPrompt = (mockInvoke.mock.calls[0][0][0].content as string).length;
+
+    vi.clearAllMocks();
+
+    // Same page one char under the ceiling: the prompts must differ by exactly that char,
+    // which pins the cut point without hardcoding the prompt template's own length.
+    searchReturning("b".repeat(MAX_RAW_CONTENT_CHARS - 1));
+    await executeTavilySearch("under");
+    const underPrompt = (mockInvoke.mock.calls[0][0][0].content as string).length;
+
+    expect(cappedPrompt - underPrompt).toBe(1);
+  });
+
+  it("flags the truncation in the SOURCE block so the researcher can discount it", async () => {
+    searchReturning(oversized);
+
+    const result = await executeTavilySearch("oversized");
+
+    expect(result).toContain(`<note>Source page exceeded ${MAX_RAW_CONTENT_CHARS} characters`);
+    expect(result).toContain("<summary>\nA summary.\n</summary>");
+  });
+
+  it("leaves a page under the ceiling untouched and adds no note", async () => {
+    const ordinary = "c".repeat(MAX_RAW_CONTENT_CHARS - 1);
+    searchReturning(ordinary);
+
+    const result = await executeTavilySearch("ordinary");
+
+    const prompt = mockInvoke.mock.calls[0][0][0].content as string;
+    expect(prompt).toContain(ordinary);
+    expect(result).not.toContain("<note>");
   });
 });
 

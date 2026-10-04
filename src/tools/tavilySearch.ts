@@ -2,7 +2,7 @@ import { tavily } from "@tavily/core";
 import { HumanMessage } from "@langchain/core/messages";
 import { summarizeWebpagePrompt } from "../prompts/summarizeWebpagePrompt.js";
 import { miniModel } from "../model.js";
-import { TAVILY_MAX_RESULTS } from "../config.js";
+import { TAVILY_MAX_RESULTS, MAX_RAW_CONTENT_CHARS } from "../config.js";
 import { PREFERRED_DOMAINS } from "./preferredDomains.js";
 import { DENIED_DOMAINS } from "./deniedDomains.js";
 
@@ -50,17 +50,29 @@ function deduplicateResults(results: SearchResult[]): Map<string, SearchResult> 
 
 // Summarizes raw page text via a cheap model call; falls back to a 1000-char
 // truncation if the model call fails or returns malformed JSON.
+//
+// The input is capped at MAX_RAW_CONTENT_CHARS first — see that constant for why. The cut
+// keeps the head of the page, which is where a document's framing and opening sections sit;
+// a source whose relevant material falls past the ceiling will summarise worse, and the
+// <note> below is what tells the researcher that happened.
 async function summarizeWebpage(rawContent: string): Promise<string> {
+  const truncated = rawContent.length > MAX_RAW_CONTENT_CHARS;
+  const input = truncated ? rawContent.slice(0, MAX_RAW_CONTENT_CHARS) : rawContent;
+
   try {
     const response = await miniModel.invoke([
-      new HumanMessage(summarizeWebpagePrompt(rawContent, getToday())),
+      new HumanMessage(summarizeWebpagePrompt(input, getToday())),
     ]);
 
     const text = response.content as string;
     const parsed = JSON.parse(text.trim());
     return (
       `<summary>\n${parsed.summary}\n</summary>\n\n` +
-      `<key_excerpts>\n${parsed.key_excerpts}\n</key_excerpts>`
+      `<key_excerpts>\n${parsed.key_excerpts}\n</key_excerpts>` +
+      (truncated
+        ? `\n\n<note>Source page exceeded ${MAX_RAW_CONTENT_CHARS} characters; ` +
+          `only the first ${MAX_RAW_CONTENT_CHARS} were summarised.</note>`
+        : "")
     );
   } catch {
     return rawContent.length > 1000 ? rawContent.slice(0, 1000) + "..." : rawContent;

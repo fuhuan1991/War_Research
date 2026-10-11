@@ -196,7 +196,11 @@ const buildSummary = (
   turns: TurnSummary[],
   meta: { topic: string; durationMs: number; shape: string; error: string | null },
 ): string => {
-  const parts: string[] = [
+  // `string | null`, with null meaning "omit this line". The conditional error line below used
+  // to be `""` and the join filtered empty strings out — which also deleted every deliberate
+  // blank line, and a GFM table that directly follows a prose line is read as a continuation
+  // of that paragraph rather than a table. The per-call table rendered as plain text.
+  const parts: (string | null)[] = [
     "# Researcher run summary",
     "",
     `**Topic:** ${meta.topic}`,
@@ -214,7 +218,7 @@ const buildSummary = (
     `**Unique pages summarised (seen_urls):** ${state.seen_urls?.length ?? 0}`,
     `**SOURCE blocks emitted:** ${turns.reduce((s, t) => s + t.results.reduce((a, r) => a + r.sources, 0), 0)}`,
     `**Withheld as already retrieved:** ${turns.reduce((s, t) => s + t.results.reduce((a, r) => a + r.omitted, 0), 0)}`,
-    meta.error ? `**Run ended with an error:** ${meta.error}` : "",
+    meta.error ? `**Run ended with an error:** ${meta.error}` : null,
     "",
     "## Per-turn behaviour",
     "",
@@ -245,7 +249,7 @@ const buildSummary = (
 
   parts.push("", ...callsTable(), ...tierCostTable());
 
-  return parts.filter((line) => line !== "").join("\n") + "\n";
+  return parts.filter((line): line is string => line !== null).join("\n") + "\n";
 };
 
 // ============================================================ MAIN ============================================================

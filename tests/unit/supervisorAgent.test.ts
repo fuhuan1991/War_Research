@@ -142,6 +142,29 @@ describe("supervisor_node", () => {
     expect(serialised).toContain("an earlier researcher report");
   });
 
+  // A tripwire, not a behavioural test: the coverage gate is the only thing stopping the
+  // supervisor from finishing with an angle unanswered, and it lives entirely in prompt text
+  // that nothing else in the suite would miss if it were edited away. tests/eval covers
+  // whether the model obeys it.
+  it("sends the assessment model the coverage gate", async () => {
+    mockFullModelInvoke.mockResolvedValueOnce(new AIMessage("<Assessment recorded>"));
+    mockDispatchingModelInvoke.mockResolvedValueOnce(
+      makeAIMessage([{ name: "CompleteResearch", id: "tc1", args: {} }]),
+    );
+
+    await makeSupervisorNode()(makeState() as never);
+
+    const systemPrompt = mockFullModelInvoke.mock.calls[0][0][0].content as string;
+
+    for (const label of ["COVERED", "PARTIAL", "NOT COVERED", "EXHAUSTED"]) {
+      expect(systemPrompt).toContain(label);
+    }
+    // The binding between the verdict and the decision, which is the gate itself.
+    expect(systemPrompt).toContain("only decide to provide a final answer if every angle");
+    // The fence that stops EXHAUSTED being a rubber stamp.
+    expect(systemPrompt).toContain("never use EXHAUSTED on your first assessment");
+  });
+
   // The prompt states the turn as a hard limit, so an off-by-one here would tell the model it
   // has a turn it does not have. The counter is incremented in the node's return value, so the
   // turn being dispatched is one past the state it was handed.

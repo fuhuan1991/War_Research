@@ -11,7 +11,8 @@
     "dev": "npx @langchain/langgraph-cli@1.5.2 dev",
     "test": "vitest run tests/unit",
     "llm-test": "vitest run tests/eval",
-    "llm-test:conversation": "vitest run tests/eval/conversationAgent.eval.test.ts"
+    "llm-test:conversation": "vitest run tests/eval/conversationAgent.eval.test.ts",
+    "llm-test:supervisor": "vitest run tests/eval/supervisorAgent.eval.test.ts"
   },
   "dependencies": {
     "@langchain/core": "^1.2.12",

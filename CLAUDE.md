@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 npm run build              # tsc compile to dist/
-npm run dev                # npx @langchain/langgraph-cli dev — starts LangGraph Studio dev server
+npm run dev                # npx @langchain/langgraph-cli@1.5.2 dev — starts LangGraph Studio dev server
 npm test                   # vitest run tests/unit (mocked, no API calls)
 npm run llm-test           # vitest run tests/eval (real OpenAI + Tavily calls, LLM-as-judge assertions)
 npm run llm-test:conversation  # just the pre-research eval — no researchers spawned, so far cheaper than the rest of tests/eval
@@ -18,6 +18,17 @@ npx vitest run tests/eval/researchAgent.eval.test.ts
 # Single test case
 npx vitest run tests/unit/researchAgent.test.ts -t "test name substring"
 ```
+
+The `dev` script pins `@langchain/langgraph-cli` to an exact version on purpose. It used to be
+`@latest`, which re-resolved the CLI on every single run, so a CLI release could change this
+project's behaviour with nothing in the repo having changed — which is exactly what happened
+when CLI 1.5.2 raised its required `@langchain/langgraph` range to `^1.4.18-rc.0` and `npm run
+dev` began warning that the lockfile's 1.4.17 was out of date. Bumping the pin is now a
+deliberate act: when you raise it, check the new CLI's required `@langchain/langgraph` range
+(`npm view @langchain/langgraph-cli@<version> dependencies`, then the `@langchain/langgraph-api`
+peer range) against what the lockfile actually resolves, and move the dependency in the same
+commit. Note the required range may name an `-rc` version as its floor, as `^1.4.18-rc.0` does;
+that is a lower bound, not a demand for a release candidate — any later stable release satisfies it.
 
 Requires a `.env` in the project root. A local `.env.example` exists, but both it and `.env` are gitignored, so neither reaches a fresh clone — the keys are listed here instead:
 

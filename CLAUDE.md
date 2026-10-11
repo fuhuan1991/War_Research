@@ -11,6 +11,9 @@ npm test                   # vitest run tests/unit (mocked, no API calls)
 npm run llm-test           # vitest run tests/eval (real OpenAI + Tavily calls, LLM-as-judge assertions)
 npm run llm-test:conversation  # just the pre-research eval — no researchers spawned, so far cheaper than the rest of tests/eval
 
+npm run trace:researcher   # trace one researchAgent run to traces/ (real API calls)
+npm run trace:supervisor   # trace one supervisorAgent run to traces/ (real API calls — the most expensive script here)
+
 # Single test file
 npx vitest run tests/unit/researchAgent.test.ts
 npx vitest run tests/eval/researchAgent.eval.test.ts
@@ -159,3 +162,54 @@ against the prompt that preceded them.
 ### Tavily search pipeline (`src/tools/tavilySearch.ts`)
 
 `executeTavilySearch` dedupes results by URL, then summarizes each page's raw content via `miniModel` (falling back to a 1000-char truncation on any failure — model error or unparsable JSON), then formats everything into a numbered `SOURCE` block string that becomes the `ToolMessage` content the researcher LLM reads next.
+
+### Tracing harnesses (`src/trace/`)
+
+`traceResearcher.ts` and `traceSupervisor.ts` run one agent and write everything that happened
+to a gitignored folder under `traces/`. They are analysis tools, not pipeline code — nothing in
+`src/` outside `src/trace/` imports them, and they are deliberately *not* instrumentation: an
+instrumented agent is not the agent you want to measure, so both harnesses observe from outside
+and no agent file knows they exist.
+
+```bash
+npm run trace:researcher -- "a research topic"
+npm run trace:supervisor -- --topic "..." --angle "..." --angle "..."
+npm run trace:supervisor -- --markers   # print the call-attribution markers and exit; no API calls
+npm run trace:supervisor -- --judge     # also spend one miniModel call mapping dispatches to angles
+```
+
+Both default to a real plan from the 2026-09-29 run recorded in `cli.log`, so a trace reflects
+work the pipeline actually produced rather than a topic invented for the harness. Each run
+writes `summary.md` (the report to read first), `transcript.md` (every message verbatim),
+`updates.jsonl`, a `state-NN-<node>.json` per superstep, and `calls.json`.
+
+Two mechanisms, both in `traceCommon.ts`:
+
+- **`streamMode: ["updates", "values"]`** exposes the state machine: "updates" is the delta each
+  node returned, "values" the full state after it. Note the delta is the node's *return value* —
+  `supervisor_tool_node` returns plain `{role: "tool"}` dicts rather than `ToolMessage`s, which
+  LangGraph coerces on the way into state but the stream does not, so `encodeMessage` tolerates
+  both. Assuming `getType()` crashes the supervisor trace at its first tool node.
+- **Wrapping `invoke` on the model singletons.** Agents look `invoke` up on the module-scope
+  tiers at call time, so wrapping it records every call's tokens without touching an agent. This
+  is the only way to see the per-page `miniModel` summarisation calls inside `executeTavilySearch`,
+  which never enter any messages channel. `bindTools()` needs its own wrapper: `ChatOpenAI`
+  returns a *fresh clone* rather than a binding that delegates, so a dispatch model bound at an
+  agent's module scope is invisible otherwise — which is why both harnesses patch before the
+  dynamic `import()` of any agent.
+
+`trace:supervisor` costs real money on a scale the other scripts do not: the supervisor spawns
+researchers for real (`MAX_SUPERVISOR_TURNS + 1` turns × up to `MAX_CONCURRENT_RESEARCH_UNITS`
+researchers, each its own multi-turn loop with Tavily searches). It does not patch `researchAgent`
+— it reports what the supervisor itself sees, the dispatched topic going in and the
+`compressed_research` coming back — but every researcher's LLM calls still land in the same
+patched singletons. Each call is therefore attributed to its caller by matching the prompt it sent
+against markers *derived from the prompt modules at runtime*, never hand-copied, so rewording a
+prompt cannot silently turn the classifier into one that answers "unknown" for everything. That
+attribution is what produces the supervisor-spend-versus-researcher-spend split in `summary.md`.
+
+`summary.md` from `trace:supervisor` also answers the open question in `src/plan.ts`: whether the
+supervisor researched the angles the user approved, or derived its own sub-topics from the brief.
+Each angle is printed against its best-matching dispatched topic, with a word-overlap figure that
+is a hint for where to look rather than a verdict — unrelated angles of one battle share its
+proper nouns, so the overlap floor is well above zero (see `WEAK_OVERLAP`).

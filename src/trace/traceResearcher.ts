@@ -15,21 +15,36 @@
  * (2) is the only way to see the per-page `miniModel` summarisation calls inside
  * executeTavilySearch: those never enter `researcher_messages`, so the stream cannot see them.
  *
+ * Both mechanisms live in `traceCommon.ts`, which `traceSupervisor.ts` shares. What stays
+ * here is everything written against the researcher's own state shape and turn structure.
+ *
  * Run with `npm run trace:researcher` (append `-- "your topic"` to override the default).
  * Output lands in a folder under traces/ named for the start time and the pid, which is
- * gitignored. The pid is in the name because two runs launched together get the same
- * ISO timestamp to the millisecond — observed — and then share one directory, which
- * interleaves updates.jsonl and leaves whichever run finishes last owning summary.md.
+ * gitignored.
  */
 import "dotenv/config";
 
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { AIMessage, BaseMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, BaseMessage, HumanMessage } from "@langchain/core/messages";
 
-const TRACE_ROOT = join(process.cwd(), "traces");
-const REQUIRED_KEYS = ["OPENAI_API_KEY", "TAVILY_API_KEY"];
+import {
+  RULE,
+  callsTable,
+  calls,
+  charsOf,
+  decodeChunk,
+  encodeMessage,
+  encodeDelta,
+  makeRunDir,
+  out,
+  pad,
+  patchModelTiers,
+  requireEnv,
+  tierCostTable,
+  usageSourceLabel,
+} from "./traceCommon.js";
 
 // One of the angles from the 2026-09-29 run in cli.log, so the trace reflects a topic the
 // pipeline actually produced rather than one invented for the harness.
@@ -38,151 +53,7 @@ const DEFAULT_TOPIC =
   "Soviet 5th Guards Tank Army at Prokhorovka on 12 July 1943, and how do these figures " +
   "compare to postwar claims?";
 
-// Approximate published USD prices per 1M tokens, for an order-of-magnitude total only.
-// Re-check before quoting these anywhere that matters.
-const PRICES: Record<Tier, { in: number; out: number }> = {
-  full: { in: 2.0, out: 8.0 }, // gpt-4.1
-  mini: { in: 0.4, out: 1.6 }, // gpt-4.1-mini
-  nano: { in: 0.1, out: 0.4 }, // gpt-4.1-nano
-};
-
-const out = (text = "") => process.stdout.write(`${text}\n`);
-const RULE = "─".repeat(78);
-
-// ============================================================ LLM CALL RECORDING ============================================================
-
-type Tier = "full" | "mini" | "nano";
-
-type CallRecord = {
-  seq: number;
-  tier: Tier;
-  startedAt: number;
-  durationMs: number;
-  promptMessages: number;
-  promptChars: number;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  usageSource: string | null;
-};
-
-const calls: CallRecord[] = [];
-
-const charsOf = (content: unknown): number => {
-  if (typeof content === "string") return content.length;
-  if (content === null || content === undefined) return 0;
-  try {
-    return JSON.stringify(content).length;
-  } catch {
-    return String(content).length;
-  }
-};
-
-/**
- * Token usage moved between fields across langchain versions, so try both rather than
- * assuming. Which one answered is recorded, so the summary can say where the numbers
- * came from instead of presenting them as unattributed.
- */
-const readUsage = (result: unknown): { in: number | null; out: number | null; source: string | null } => {
-  const message = result as {
-    usage_metadata?: { input_tokens?: number; output_tokens?: number };
-    response_metadata?: { tokenUsage?: { promptTokens?: number; completionTokens?: number } };
-  };
-
-  const modern = message?.usage_metadata;
-  if (modern && typeof modern.input_tokens === "number") {
-    return { in: modern.input_tokens, out: modern.output_tokens ?? null, source: "usage_metadata" };
-  }
-
-  const legacy = message?.response_metadata?.tokenUsage;
-  if (legacy && typeof legacy.promptTokens === "number") {
-    return { in: legacy.promptTokens, out: legacy.completionTokens ?? null, source: "response_metadata.tokenUsage" };
-  }
-
-  return { in: null, out: null, source: null };
-};
-
-type Patchable = { invoke: (...args: unknown[]) => Promise<unknown> };
-type BindsTools = { bindTools: (...args: unknown[]) => unknown };
-
-/**
- * Wraps `invoke` on one model singleton. `promptChars` is recorded alongside the token
- * count because it needs no provider cooperation — if usage metadata ever comes back empty
- * the growth curve is still measurable.
- */
-const patchModel = (model: Patchable, tier: Tier) => {
-  const original = model.invoke.bind(model);
-
-  model.invoke = async (...args: unknown[]) => {
-    const input = args[0];
-    const messages: unknown[] = Array.isArray(input) ? input : [input];
-    const startedAt = Date.now();
-
-    const result = await original(...args);
-
-    const usage = readUsage(result);
-    calls.push({
-      seq: calls.length + 1,
-      tier,
-      startedAt,
-      durationMs: Date.now() - startedAt,
-      promptMessages: messages.length,
-      promptChars: messages.reduce<number>(
-        (sum, m) => sum + charsOf((m as { content?: unknown })?.content ?? m),
-        0,
-      ),
-      inputTokens: usage.in,
-      outputTokens: usage.out,
-      usageSource: usage.source,
-    });
-
-    return result;
-  };
-};
-
-/**
- * Patches the model a `bindTools()` call hands back.
- *
- * Necessary because `ChatOpenAI.bindTools()` does not return a RunnableBinding delegating to
- * the original — it returns a *fresh ChatOpenAI clone*, verified against this version. So
- * researchAgent's module-scope `nanoModel.bindTools([...])` produces an object the singleton
- * patch above can never observe, and the dispatch call is invisible without this. The clone
- * does not route through `nanoModel.invoke`, so there is no double counting.
- */
-const patchBindTools = (model: BindsTools, tier: Tier) => {
-  const original = model.bindTools.bind(model);
-
-  model.bindTools = (...args: unknown[]) => {
-    const bound = original(...args);
-    patchModel(bound as Patchable, tier);
-    return bound;
-  };
-};
-
 // ============================================================ ENCODING ============================================================
-
-type EncodedMessage = {
-  type: string;
-  name: string | null;
-  tool_call_id: string | null;
-  tool_calls: { name: string; id?: string; args: unknown }[];
-  chars: number;
-  content: string;
-};
-
-// BaseMessage.toJSON() exists but emits a deep serialisation envelope that buries the fields
-// this analysis is about, so encode the interesting parts by hand instead.
-const encodeMessage = (message: BaseMessage): EncodedMessage => ({
-  type: message.getType(),
-  name: (message as { name?: string }).name ?? null,
-  tool_call_id: (message as ToolMessage).tool_call_id ?? null,
-  tool_calls: ((message as AIMessage).tool_calls ?? []).map((tc) => ({
-    name: tc.name,
-    id: tc.id,
-    args: tc.args,
-  })),
-  chars: charsOf(message.content),
-  content: typeof message.content === "string" ? message.content : JSON.stringify(message.content),
-});
 
 type ResearcherSnapshot = {
   research_topic?: string;
@@ -204,32 +75,7 @@ const encodeState = (state: ResearcherSnapshot) => ({
   researcher_messages: (state.researcher_messages ?? []).map(encodeMessage),
 });
 
-const encodeDelta = (delta: unknown) => {
-  if (!delta || typeof delta !== "object") return delta ?? null;
-
-  const encoded: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(delta as Record<string, unknown>)) {
-    encoded[key] =
-      key === "researcher_messages" && Array.isArray(value)
-        ? value.map((m) => encodeMessage(m as BaseMessage))
-        : value;
-  }
-  return encoded;
-};
-
-// With a multi-mode streamMode LangGraph yields [mode, payload] tuples. The shape is
-// verified against the first chunk at runtime rather than assumed, and reported in the
-// summary, so a version change shows up as a note instead of a silently empty trace.
-const decodeChunk = (chunk: unknown): { mode: string; payload: unknown } => {
-  if (Array.isArray(chunk) && chunk.length === 2 && typeof chunk[0] === "string") {
-    return { mode: chunk[0], payload: chunk[1] };
-  }
-  return { mode: "unknown", payload: chunk };
-};
-
 // ============================================================ REPORTS ============================================================
-
-const pad = (n: number, width: number) => String(n).padStart(width, "0");
 
 const buildTranscript = (state: ResearcherSnapshot): string => {
   const parts: string[] = [
@@ -350,17 +196,13 @@ const buildSummary = (
   turns: TurnSummary[],
   meta: { topic: string; durationMs: number; shape: string; error: string | null },
 ): string => {
-  const usageSources = [...new Set(calls.map((c) => c.usageSource).filter(Boolean))];
-  const total = (tier: Tier, field: "inputTokens" | "outputTokens") =>
-    calls.filter((c) => c.tier === tier).reduce((sum, c) => sum + (c[field] ?? 0), 0);
-
   const parts: string[] = [
     "# Researcher run summary",
     "",
     `**Topic:** ${meta.topic}`,
     `**Wall time:** ${(meta.durationMs / 1000).toFixed(1)}s`,
     `**Stream chunk shape:** ${meta.shape}`,
-    `**Token usage read from:** ${usageSources.length ? usageSources.join(", ") : "nothing populated — token columns are blank"}`,
+    `**Token usage read from:** ${usageSourceLabel()}`,
     `**Final research_iterations:** ${state.research_iterations ?? "(none)"}`,
     `**Messages in final state:** ${state.researcher_messages?.length ?? 0}`,
     `**compressed_research:** ${charsOf(state.compressed_research ?? "")} chars`,
@@ -401,38 +243,7 @@ const buildSummary = (
     for (const query of turn.queries) parts.push(`  - \`${query}\``);
   }
 
-  parts.push(
-    "",
-    "## Every LLM call, in order",
-    "",
-    "`prompt chars` is the size of the message list handed to the model — the direct measure",
-    "of history growth, independent of the provider reporting usage.",
-    "",
-    "| # | Tier | Prompt msgs | Prompt chars | Input tokens | Output tokens | ms |",
-    "|---|---|---|---|---|---|---|",
-  );
-
-  for (const call of calls) {
-    parts.push(
-      `| ${call.seq} | ${call.tier} | ${call.promptMessages} | ${call.promptChars} ` +
-        `| ${call.inputTokens ?? ""} | ${call.outputTokens ?? ""} | ${call.durationMs} |`,
-    );
-  }
-
-  parts.push("", "## Cost by tier", "", "| Tier | Calls | Input tokens | Output tokens | Approx USD |", "|---|---|---|---|---|");
-
-  let grand = 0;
-  for (const tier of ["full", "mini", "nano"] as Tier[]) {
-    const tierCalls = calls.filter((c) => c.tier === tier);
-    if (!tierCalls.length) continue;
-    const inTokens = total(tier, "inputTokens");
-    const outTokens = total(tier, "outputTokens");
-    const usd = (inTokens * PRICES[tier].in + outTokens * PRICES[tier].out) / 1_000_000;
-    grand += usd;
-    parts.push(`| ${tier} | ${tierCalls.length} | ${inTokens} | ${outTokens} | $${usd.toFixed(4)} |`);
-  }
-  parts.push(`| **total** | ${calls.length} | | | **$${grand.toFixed(4)}** |`);
-  parts.push("", "_Prices are the approximate published per-1M-token rates hardcoded in this harness._");
+  parts.push("", ...callsTable(), ...tierCostTable());
 
   return parts.filter((line) => line !== "").join("\n") + "\n";
 };
@@ -442,34 +253,18 @@ const buildSummary = (
 async function main() {
   const topic = process.argv.slice(2).filter((arg) => !arg.startsWith("-")).join(" ").trim() || DEFAULT_TOPIC;
 
-  const missing = REQUIRED_KEYS.filter((key) => !process.env[key]);
-  if (missing.length) {
-    out(`Missing required environment variable(s): ${missing.join(", ")}`);
-    out("Add them to .env in the project root — see CLAUDE.md for the full key list.");
-    process.exit(1);
-  }
+  requireEnv();
 
   // Both imports are dynamic and ordered: model.ts builds its ChatOpenAI instances at module
   // scope and throws on a missing key, so the check above has to run first. Patching the tiers
   // before researchAgent loads also covers nanoModel.bindTools(), which runs at that module's
   // scope — the binding keeps a reference to the object, so it still resolves the wrapper.
   const models = await import("../model.js");
-  patchModel(models.fullModel as unknown as Patchable, "full");
-  patchModel(models.miniModel as unknown as Patchable, "mini");
-  patchModel(models.nanoModel as unknown as Patchable, "nano");
-
-  // Must run before researchAgent loads: its module scope calls nanoModel.bindTools() once,
-  // and only a wrapper installed by then sees the clone that call returns.
-  patchBindTools(models.nanoModel as unknown as BindsTools, "nano");
-  patchBindTools(models.fullModel as unknown as BindsTools, "full");
-  patchBindTools(models.miniModel as unknown as BindsTools, "mini");
+  patchModelTiers(models);
 
   const { researchAgent } = await import("../researchAgent.js");
 
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const runDir = join(TRACE_ROOT, `${stamp}-pid${process.pid}-researcher`);
-  mkdirSync(runDir, { recursive: true });
-
+  const runDir = makeRunDir("researcher");
   const updatesPath = join(runDir, "updates.jsonl");
 
   // Seeded exactly as supervisor_tool_node seeds it, so the trace reflects production.
@@ -507,7 +302,10 @@ async function main() {
         for (const [node, delta] of Object.entries(payload as Record<string, unknown>)) {
           lastNode = node;
           step += 1;
-          appendFileSync(updatesPath, `${JSON.stringify({ step, node, delta: encodeDelta(delta) })}\n`);
+          appendFileSync(
+            updatesPath,
+            `${JSON.stringify({ step, node, delta: encodeDelta(delta, "researcher_messages") })}\n`,
+          );
           out(`  step ${pad(step, 2)}  ${node}`);
         }
         continue;

@@ -50,10 +50,34 @@ export const makeSupervisorNode = () =>
       ...supervisorMessages,
     ]) as AIMessage;
 
-    // Dispatch research task or stop research
+    // Dispatch research task or stop research.
+    //
+    // Deliberately NOT given `...supervisorMessages`. This model only has to name a tool, and
+    // the assessment above already states the decision and the sub-topics, so the history buys
+    // it nothing while being charged for on every turn — and the tool messages in that history
+    // are whole researcher reports. A traced run measured this call receiving 60,939 prompt
+    // characters (14,163 input tokens) to emit 11 output tokens naming CompleteResearch, and
+    // the cost grows with every note that comes back. The researcher's dispatch call was
+    // changed for the same reason; see researchAgent.ts.
+    //
+    // The brief still goes in: it is one constant message rather than a growing one, and the
+    // ConductResearch topics this model writes have to be self-contained, because a sub-agent
+    // sees nothing but the topic it is handed. Located by type rather than by index [0] so
+    // that a change to how dispatch_research seeds this graph degrades visibly here instead of
+    // silently sending the wrong message.
+    const brief = supervisorMessages.find((msg) => msg._getType() === "human");
+
     const decisionResponse: AIMessage = await dispatchingModel.invoke([
-      new SystemMessage(supervisorDispatchingPrompt(MAX_SUPERVISOR_TURNS, MAX_CONCURRENT_RESEARCH_UNITS)),
-      ...supervisorMessages,
+      new SystemMessage(
+        supervisorDispatchingPrompt(
+          MAX_SUPERVISOR_TURNS,
+          MAX_CONCURRENT_RESEARCH_UNITS,
+          // The counter still holds the pre-increment value here, so the turn being dispatched
+          // is the next one.
+          state.research_iterations + 1,
+        ),
+      ),
+      ...(brief ? [brief] : []),
       assessmentResponse,
     ]) as AIMessage;
 

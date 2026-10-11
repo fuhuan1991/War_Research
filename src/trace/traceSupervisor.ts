@@ -115,7 +115,9 @@ const MARKERS: [string, string][] = [
   ["supervisor:assess", headOf(supervisorAssessmentPrompt)],
   [
     "supervisor:dispatch",
-    headOf(supervisorDispatchingPrompt(MAX_SUPERVISOR_TURNS, MAX_CONCURRENT_RESEARCH_UNITS)),
+    // The third argument is the current turn; any value does here, since headOf cuts the
+    // template well before the first interpolated value.
+    headOf(supervisorDispatchingPrompt(MAX_SUPERVISOR_TURNS, MAX_CONCURRENT_RESEARCH_UNITS, 1)),
   ],
   ["researcher:assess", headOf(researcherAssessmentPrompt)],
   [

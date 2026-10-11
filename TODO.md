@@ -6,7 +6,66 @@ Living backlog of action items for the War Research project. Add items here as t
 
 - [ ] **Output quality: prose over bullet lists.** Final reports currently read as large bullet lists; expectation is a few paragraphs / short-article style. `reportGeneratorPrompt` (`src/prompts/reportGeneratorPrompt.ts`) already says "write in paragraph form" but the report is likely inheriting bullet-heavy style from the researcher's `compressed_research` notes feeding into it — needs investigation into both `researcherCompressionPrompt.ts` and `reportGeneratorPrompt.ts`.
 - [ ] **Output should include images.** No image capability exists anywhere in the pipeline today — Tavily search is text-only (`src/tools/tavilySearch.ts`), and no prompt references embedding images. Needs a design decision: image search API (Tavily supports `includeImages`), how images get carried through `raw_notes`/`notes` state, and how the final report embeds them (markdown `![]()` with source URLs vs. downloading/storing).
-- [ ] **Make the supervisor research the angles the user approved.** `dispatch_research` (`src/conversationAgent.ts`) hands the supervisor the confirmed plan as prose via `planToBrief()`, but `supervisor_node` still derives its own sub-topics from it — so the angles the user saw and approved are a suggestion, not a guarantee. Fix: have the supervisor emit one `ConductResearch` call per angle on its first turn, skipping that turn's LLM dispatch entirely, then let the normal assess → dispatch loop take over for gap-filling. `MAX_ANGLES_PER_PLAN` is 3 to match `MAX_CONCURRENT_RESEARCH_UNITS`, but it is now a ceiling rather than a fixed count, so the supervisor must handle a plan with fewer angles than that.
+- [ ] **Cover every approved angle before the supervisor stops.** Rewritten 2026-10-11 from
+  "make the supervisor research the angles the user approved", after four traced runs
+  (`npm run trace:supervisor`; traces are gitignored, the numbers below are the record).
+
+  **1:1 fidelity is not the target.** The old framing — that the supervisor derives its own
+  sub-topics, so the approved angles are only a suggestion — turned out to describe a problem
+  that does not happen on well-formed plans. Measured turn-1 dispatches against approved
+  angles: 3 angles → 3 dispatches (93/100/100% word overlap), 2 angles → 2 dispatches
+  (93/92%, and 93/85% on a re-run). More importantly, extra dispatches are *legitimate*: a
+  one-angle plan was split into "official military records on ration policies" and "daily diet
+  including primary accounts", which is a reasonable decomposition of one question, not drift.
+  A plan with 3 angles may well need 4 researchers.
+
+  **What the traces showed instead**, both at the stop decision rather than the dispatch:
+  - **Gaps are enumerated and then ignored.** Two runs listed open gaps in the assessment's
+    gap section and called `CompleteResearch` in the same breath. One re-dispatched for
+    "tabulated year-by-year ration scales", spent ~$0.70 on that round, and the next
+    assessment reported the same gap still open — then stopped, reclassifying it as "a minor
+    limitation". Nothing makes a named gap block completion.
+  - **Nothing checks coverage at all.** `supervisorAssessmentPrompt` never mentions the angles;
+    it asks only "what is the overall research question?". No angle was dropped in four runs,
+    but nothing prevents it, and a dropped angle means a report that does not answer what the
+    user agreed to — the one unrecoverable failure here.
+  - **Under-filled plans attract unbounded work.** The one-angle plan drew 2 researchers on
+    turn 1 and 4 in total, 3 turns, $1.43 — against $0.27 for a well-formed 2-angle plan.
+
+  **Fix site: the stop decision, not turn 1.** Require the assessment to render an explicit
+  per-angle verdict and forbid concluding sufficiency while any angle is uncovered. The
+  instrument half-exists already: unprompted, the assessments structured themselves as
+  "Angle 1: … Angle 2: … Angle 3: …" with findings against each, so this is making required
+  something the model already volunteers. Needs an escape hatch for genuinely thin sources
+  ("covered as well as the available sources allow", with a reason) or a topic with no
+  material will burn to the turn cap.
+
+  **Superseded:** the previous fix here was "emit one `ConductResearch` per angle on turn 1,
+  skipping that turn's LLM dispatch". Dropped: it hardcodes a count that should not be fixed,
+  and discards the assessment's judgment, which the traces show is the most reliable part of
+  the system. It also required the angles structurally — `SupervisorState` has no `plan`
+  field — whereas the coverage framing needs no state change at all, since `planToBrief()`
+  already lists the angles in the brief the assessment reads. Note the turn-1 assessment is
+  structurally incapable of adding information (state holds only the brief; 489–572 input
+  tokens, output is a restatement of the angles), so skipping *that* call remains a standalone
+  micro-optimisation if anyone wants it, worth ~$0.003 a run.
+
+- [ ] **Dispatched topics quietly weaken the angle they serve.** Two separate losses, both
+  measured in the runs above, both at the `nanoModel` dispatch call:
+  - **Named particulars get generalised.** An angle naming the *British Expeditionary Force*
+    was dispatched as "British soldiers"; an angle asking what soldiers ate *and* how rations
+    changed 1914–1918 had the change-over-time split off and dropped from the first topic.
+    The dispatched string is everything a sub-agent receives, so a weakened topic researches
+    something adjacent to what the user approved.
+  - **"At least a paragraph" is ignored.** `supervisorDispatchingPrompt` demands a detailed,
+    standalone, paragraph-plus description because sub-agents cannot see each other. Measured
+    output: 114–190 characters, one sentence, every time.
+
+  Note a prompt-only fix has already been tried by proxy and failed — the paragraph rule is a
+  prompt instruction the dispatch model ignores. The more promising shape is to let the
+  `fullModel` assessment author the topic strings (it already writes "Sub-agent 1: gather
+  primary and secondary sources on…" and the dispatcher discards that phrasing) and leave the
+  nano call a copy task, which is what it is reliable at.
 
 - [ ] **Angle quality: remaining gaps.** The genericness problem is fixed (see the Done
   entry below). Two things measurement did *not* settle:

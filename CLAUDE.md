@@ -6,6 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 npm run build              # tsc compile to dist/
+npm run cli                # chat with the pipeline in a terminal (real API calls — a full research run)
 npm run dev                # npx @langchain/langgraph-cli@1.5.2 dev — starts LangGraph Studio dev server
 npm test                   # vitest run tests/unit (mocked, no API calls)
 npm run llm-test           # vitest run tests/eval (real OpenAI + Tavily calls, LLM-as-judge assertions)
@@ -17,6 +18,11 @@ npm run trace:supervisor   # trace one supervisorAgent run to traces/ (real API 
 # Single test file
 npx vitest run tests/unit/researchAgent.test.ts
 npx vitest run tests/eval/researchAgent.eval.test.ts
+
+# CLI flags — npm forwards only what follows the `--`
+npm run cli -- --verbose              # agents' own console output inline instead of in cli.log
+npm run cli -- --html                 # also render the report as HTML and open it (macOS)
+npm run cli -- "the siege of Malta"   # skip the opening prompt
 
 # Single test case
 npx vitest run tests/unit/researchAgent.test.ts -t "test name substring"
@@ -158,6 +164,37 @@ plan must be rejected *and* a known-good one accepted), and its header records w
 wordings were found to produce always-NO judges, polarity flips, and a judge that graded on a
 curve. Its thresholds were set from measurement and are deliberately strict enough to fail
 against the prompt that preceded them.
+
+### The finished report (`src/cli.ts`, `src/reportOutput.ts`)
+
+`report_generator` writes the report to both `final_report` and `messages`, which is right for
+a chat UI and wrong for a terminal: it is thousands of words of markdown, and dumping it to
+stdout buries the conversation in raw `##` and bracketed URLs that scroll past in one burst.
+
+The CLI therefore **suppresses that one message** — it skips any AI message whose content
+contains a non-empty `final_report` — and prints an outline instead: title, `##` sections,
+word and source counts, and the saved path. This is a display decision local to `cli.ts`; no
+agent or state field changed, so LangGraph Studio and the evals still see the report in
+`messages`. If you add a UI, make the same call there rather than changing the graph.
+
+`src/reportOutput.ts` holds the pure part — outline extraction, counts, the filename slug and
+the markdown→HTML renderer — with no filesystem or process access, so it is unit-tested
+directly in `tests/unit/reportOutput.test.ts` under `npm test`. Two things in it are load-bearing:
+
+- **Every `replace` passes a replacer function**, for the same reason `fillTemplate` exists.
+  Report bodies carry Tavily-scraped page text, so a `$'` in a replacement *string* would
+  splice surrounding content into the output. Regression tests pin this.
+- **`renderHtml` escapes before it substitutes, and accepts only http(s) URLs.** Same untrusted
+  source. A rejected URL degrades to its link text rather than becoming a live `javascript:`
+  link.
+
+Reports are saved as `reports/<YYYY-MM-DD>-<topic-slug>.md`, slugged from `plan.final_topic`,
+falling back to the old bare-timestamp name when there is no plan. A name already taken gets a
+`-2`, `-3` suffix rather than overwriting — losing a report that cost a full research run to a
+name collision is not a trade worth making for a tidy folder. The date is the local one, not UTC — `toISOString()` names an evening run for tomorrow
+anywhere west of Greenwich. `--html` additionally writes a self-contained `.html` sibling and
+opens it, which is where the citations become clickable; it is also read from `npm_config_html`,
+so the `--` separator `npm run cli -- --html` needs is optional for that one flag.
 
 ### Tavily search pipeline (`src/tools/tavilySearch.ts`)
 

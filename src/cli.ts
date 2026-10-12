@@ -12,16 +12,33 @@
  * One topic per process: when the graph reaches END the report is saved and the CLI exits,
  * because `notes` uses an append reducer and a second research run on the same thread_id
  * would splice the first report's findings into the next one.
+ *
+ * The report itself is never printed here. It is markdown thousands of words long, and a
+ * terminal is the one place it cannot be read — so it is written to `reports/` and the chat
+ * gets its outline instead (see `printOutline`). The report stays in `messages` for any other
+ * UI; suppressing it is a display decision local to this file. `--html` additionally renders
+ * a self-contained HTML copy and opens it, which is where the citations become clickable.
  */
 import "dotenv/config";
 
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { createInterface, type Interface } from "node:readline/promises";
 
 import { Command } from "@langchain/langgraph";
 import { BaseMessage, HumanMessage } from "@langchain/core/messages";
+
+import type { PlanType } from "./plan.js";
+import {
+  countSources,
+  countWords,
+  extractOutline,
+  renderHtml,
+  reportBaseName,
+  stripCodeFence,
+} from "./reportOutput.js";
 
 // The graph is imported dynamically (see main) so the API-key check runs first: model.ts
 // constructs its ChatOpenAI instances at module scope and throws on a missing key, which
@@ -42,6 +59,7 @@ const out = (text = "") => process.stdout.write(`${text}\n`);
 
 const paint = (code: string) => (text: string) => (TTY ? `\x1b[${code}m${text}\x1b[0m` : text);
 const cyan = paint("36;1");
+const bold = paint("1");
 const dim = paint("2");
 const red = paint("31");
 
@@ -188,11 +206,17 @@ type Turn = {
   finished: boolean;
   messages: BaseMessage[];
   finalReport: string;
+  /** The confirmed plan, read back to name the report file. Null until propose_plan runs. */
+  plan: PlanType | null;
 };
 
 const snapshotTurn = async (graph: ConversationGraph, config: { configurable: { thread_id: string } }): Promise<Turn> => {
   const snapshot = await graph.getState(config);
-  const values = snapshot.values as { messages?: BaseMessage[]; final_report?: string };
+  const values = snapshot.values as {
+    messages?: BaseMessage[];
+    final_report?: string;
+    plan?: PlanType | null;
+  };
 
   return {
     // Read off the interrupts rather than `next`: after a failed node `next` is non-empty too,
@@ -201,6 +225,7 @@ const snapshotTurn = async (graph: ConversationGraph, config: { configurable: { 
     finished: snapshot.next.length === 0,
     messages: values.messages ?? [],
     finalReport: values.final_report ?? "",
+    plan: values.plan ?? null,
   };
 };
 
@@ -245,20 +270,121 @@ const help = () => {
   out(dim("  /help    this list"));
   out(dim("  /exit    quit (Ctrl-C and Ctrl-D also work)"));
   out(dim(`  Agent logs go to ${LOG_FILE} — pass --verbose to see them here instead.`));
+  out(dim("  Pass --html to also render the finished report as HTML and open it."));
   out();
 };
 
-const saveReport = (report: string) => {
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const file = join(REPORT_DIR, `${stamp}.md`);
+// ---------- the finished report ----------
+
+const FALLBACK_WIDTH = 80;
+
+/** Trims a heading to fit the terminal, with an ellipsis when it had to be cut. */
+const clip = (text: string, room: number) =>
+  text.length <= room ? text : `${text.slice(0, Math.max(1, room - 1)).trimEnd()}…`;
+
+/**
+ * Prints what the report contains rather than the report itself: title, sections, size, path.
+ *
+ * This is the whole point of the feature. A finished report is thousands of words of markdown;
+ * dumped to a terminal it is a wall of `##` and bracketed URLs that scrolls past in one burst
+ * and cannot be read back. The chat gets the outline, the file gets the prose.
+ */
+const printOutline = (report: string, mdFile: string, htmlFile?: string) => {
+  const { title, sections } = extractOutline(report);
+  const sources = countSources(report);
+  const width = process.stdout.columns ?? FALLBACK_WIDTH;
+
+  out();
+  out(cyan("  Report ready"));
+
+  if (title) {
+    out();
+    out(`  ${bold(clip(title, width - 4))}`);
+  }
+
+  if (sections.length) {
+    out();
+    for (const [index, section] of sections.entries()) {
+      out(dim(`    ${String(index + 1).padStart(2)}. `) + clip(section, width - 10));
+    }
+  }
+
+  out();
+  out(dim(`  ${countWords(report).toLocaleString("en-US")} words · ${sources} source${sources === 1 ? "" : "s"}`));
+  out(`  ${relative(process.cwd(), mdFile)}`);
+  if (htmlFile) out(`  ${relative(process.cwd(), htmlFile)}`);
+  out();
+};
+
+/**
+ * The first base name in reports/ that no earlier run has taken.
+ *
+ * Two runs on the same topic on the same day would otherwise collide, and losing a report
+ * that cost a full research run to a name clash is not an acceptable trade for a tidy folder.
+ */
+const freeBaseName = (base: string) => {
+  for (let suffix = 1; ; suffix += 1) {
+    const candidate = suffix === 1 ? base : `${base}-${suffix}`;
+    if (!existsSync(join(REPORT_DIR, `${candidate}.md`))) return candidate;
+  }
+};
+
+/**
+ * Hands the rendered report to the browser.
+ *
+ * macOS only: `open` is a darwin command. Failures are logged and mentioned but never thrown
+ * — by this point a full research run has been paid for and the report is already on disk, so
+ * nothing about launching a viewer is worth failing over. `spawn` rather than `exec` because
+ * the path is derived from the research topic and must never reach a shell; the ENOENT from a
+ * missing `open` arrives as an event rather than an exception, hence both error paths.
+ */
+const openInBrowser = (file: string) => {
+  if (process.platform !== "darwin") {
+    out(dim("  --html opens the file with macOS's `open` — on this platform, open it yourself."));
+    return;
+  }
+
   try {
-    mkdirSync(REPORT_DIR, { recursive: true });
-    writeFileSync(file, report.endsWith("\n") ? report : `${report}\n`, "utf8");
-    out(dim(`  Saved to ${file}`));
+    const child = spawn("open", [file], { stdio: "ignore", detached: true });
+    child.on("error", (err) => logError(err));
+    child.unref();
   } catch (err) {
     logError(err);
-    out(dim(`  Could not save the report to ${file} — see ${LOG_FILE}.`));
+    out(dim(`  Could not open ${file} — see ${LOG_FILE}.`));
   }
+};
+
+const saveReport = (rawReport: string, plan: PlanType | null, asHtml: boolean) => {
+  const report = stripCodeFence(rawReport);
+  const base = freeBaseName(reportBaseName(plan, new Date()));
+  const mdFile = join(REPORT_DIR, `${base}.md`);
+
+  try {
+    mkdirSync(REPORT_DIR, { recursive: true });
+    writeFileSync(mdFile, report.endsWith("\n") ? report : `${report}\n`, "utf8");
+  } catch (err) {
+    logError(err);
+    out(dim(`  Could not save the report to ${mdFile} — see ${LOG_FILE}.`));
+    return;
+  }
+
+  // The HTML copy is written only for --html: a default run should leave one file per report,
+  // and the markdown is the artifact worth keeping.
+  let htmlFile: string | undefined;
+  if (asHtml) {
+    const candidate = join(REPORT_DIR, `${base}.html`);
+    try {
+      const { title } = extractOutline(report);
+      writeFileSync(candidate, renderHtml(report, title || plan?.final_topic || ""), "utf8");
+      htmlFile = candidate;
+    } catch (err) {
+      logError(err);
+      out(dim(`  Could not render ${candidate} — see ${LOG_FILE}.`));
+    }
+  }
+
+  printOutline(report, mdFile, htmlFile);
+  if (htmlFile) openInBrowser(htmlFile);
 };
 
 /**
@@ -288,6 +414,12 @@ const makeReader = (rl: Interface) => {
 async function main() {
   const args = process.argv.slice(2);
   const verbose = args.includes("--verbose") || args.includes("-v");
+  // `npm run cli --html` hands the script an empty argv — npm absorbs the flag into its own
+  // config rather than forwarding it, and only `npm run cli -- --html` gets through. It does
+  // set npm_config_html on the way, so honour that too: the flag failing silently is a worse
+  // outcome than the small chance of an .npmrc defining `html`. Not done for --verbose, where
+  // `verbose` is a real npm option and the variable would no longer mean only what the user typed.
+  const asHtml = args.includes("--html") || process.env.npm_config_html === "true";
   const opening = args.filter((arg) => !arg.startsWith("-")).join(" ").trim();
 
   if (!verbose) patchConsole();
@@ -377,7 +509,16 @@ async function main() {
     }
 
     for (const message of turn.messages.slice(printed)) {
-      if (message.getType() === "ai") printAi(String(message.content));
+      if (message.getType() !== "ai") continue;
+
+      const content = String(message.content);
+      // report_generator appends the whole report to `messages` as well as to `final_report`,
+      // which is right for a chat UI and wrong for a terminal. Containment rather than "the
+      // last message of the final turn" so this keeps holding if that node ever says anything
+      // after the report.
+      if (turn.finalReport && content.includes(turn.finalReport)) continue;
+
+      printAi(content);
     }
     printed = turn.messages.length;
 
@@ -387,7 +528,7 @@ async function main() {
     if (turn.finished) {
       // Both END routes land here: a finished report, and scope_topic's give-up path, which
       // has already said its piece as an AI message and leaves final_report empty.
-      if (turn.finalReport) saveReport(turn.finalReport);
+      if (turn.finalReport) saveReport(turn.finalReport, turn.plan, asHtml);
       break;
     }
 

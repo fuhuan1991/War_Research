@@ -8,3 +8,4 @@ plan.md
 cli.log
 reports/
 traces/
+.DS_Store

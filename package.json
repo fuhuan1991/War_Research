@@ -2,6 +2,7 @@
   "name": "war-research",
   "version": "1.0.0",
   "description": "War-focused deep research agent using LangGraph.js",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "tsc",

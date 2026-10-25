@@ -87,7 +87,7 @@ researchAgent (src/researchAgent.ts)         — one instance per research topic
 
 Both `supervisorAgent` and `researchAgent` split each turn into two LLM calls instead of one:
 1. **Assess** (`fullModel`, gpt-4.1) — reasons over state in prose, appended as an `AIMessage`.
-2. **Dispatch** (`nanoModel`, gpt-4.1-nano, `tool_choice: "required"`) — forced to emit a tool call based on the assessment, decoupling "thinking" from "acting" so the cheap model only has to pick a tool, not reason.
+2. **Dispatch** (`nanoModel`, gpt-5.4-nano, `tool_choice: "required"`) — forced to emit a tool call based on the assessment, decoupling "thinking" from "acting" so the cheap model only has to pick a tool, not reason.
 
 `miniModel` (gpt-4.1-mini) is reserved for cheaper structured-output work: `classify_feedback` and per-page `summarizeWebpage`.
 
@@ -195,6 +195,111 @@ name collision is not a trade worth making for a tidy folder. The date is the lo
 anywhere west of Greenwich. `--html` additionally writes a self-contained `.html` sibling and
 opens it, which is where the citations become clickable; it is also read from `npm_config_html`,
 so the `--` separator `npm run cli -- --html` needs is optional for that one flag.
+
+### Illustrating the report (`src/images/`)
+
+Finished reports carry 1-2 pictures at the end of each section — a battle painting, the weapon
+involved, a museum relic, a wartime photograph, or a map of the ground. The source is **Wikimedia Commons only**: it
+is the one unauthenticated endpoint that covers all four categories *and* returns the author
+and licence fields a credit line needs, and it federates much museum material already (the
+Smithsonian's Brown Bess photographs and the Warsaw National Museum's Austerlitz canvas both
+arrive this way). Tavily's `includeImages` was evaluated and rejected — it returns images
+found on pages matching a *text* query, which means logos and author headshots.
+
+Three modules, split along the testability line the rest of the project uses:
+
+- `commonsImages.ts` — the API client. Network, no LLM.
+- `insertImages.ts` — **pure**: decides where a picture lands in the markdown. No network, no
+  LLM, so `npm test` covers the placement arithmetic with no API key.
+- `illustrate.ts` — the orchestrator, with both the model and the search function injectable.
+
+**It runs inside `report_generator`, after the report text exists** — not in a node of its
+own. Two reasons, and both matter if you are tempted to extract it: the pass keys off the
+report's *real* `##` headings, which cannot be predicted from `plan` because the report prompt
+explicitly lets the model structure sections however it likes; and a new node would have to be
+mirrored by hand in `tests/eval/conversationAgent.eval.test.ts`, which nothing guards against
+drift. The illustrated text goes to `final_report` **and** `messages`, so Studio and any future
+UI get pictures rather than a bare report. No state channel was added — the images live in the
+report string.
+
+**Two LLM calls, not one, and the reason is structural**: one call cannot both invent the
+search queries and choose among results it has not seen. Call A (`imageQueryPrompt`) reads the
+headings plus the research `notes` and emits queries; Call B (`imagePickPrompt`) reads the
+fetched candidates and returns picks. Both are `miniModel` and both cover every section at
+once, so the picker can avoid giving two sections the same painting. Call A seeing the
+**findings** is the point of running after research: a section asking "what was the secret
+weapon at X" can only be illustrated once the findings reveal what the weapon was.
+
+Five things here are load-bearing, each measured against the live API rather than assumed:
+
+- **Queries must be 2-4 keywords, never a sentence.** Commons' search is effectively
+  conjunctive. `Prokhorovka tank engagement July 1943` returns **0** results;
+  `Prokhorovka` returns 3. `British Expeditionary Force ration scales 1914` returns 0;
+  `British Expeditionary Force rations` returns 2. `searchWithBackoff` retries with the query
+  cut to its proper nouns, and the query prompt's central instruction is to name the thing
+  rather than describe it.
+- **No model ever supplies a URL.** Call B returns an index into a catalogue the code fetched,
+  and every index is re-checked against what that section was actually offered. A model asked
+  for a URL produces a plausible one, and a plausible-but-wrong image URL is a broken image in
+  a report that cost a full research run.
+- **`MIN_IMAGE_LONG_EDGE` is a long edge, not a width.** Over 112 results from 12 queries, a
+  long-edge cut at 640 rejects 6 and all six deserve it; `width >= 800` rejects 15, 9 of them
+  good images penalised for being tall — including all three Sutton Hoo helmet shots and a
+  Bundesarchiv Panzer VI that misses by 12 pixels. A short-edge cut drops 29%. It is also a
+  *quality* floor and not a junk filter: `gsrnamespace=6` plus `filetype:bitmap` returned zero
+  logos or icons across all 112 results, which is why the cut stays gentle and the picking
+  model does the real rejecting.
+- **The rate-limit response is plain text, not JSON.** Exceed it and the body is "You are
+  making too many requests to the API.", so an unguarded `JSON.parse` throws mid-run. Every
+  parse is guarded and requests are spaced by `COMMONS_MIN_INTERVAL_MS`. Measured: 1.2s
+  spacing failed on the 11th request of a burst, 2.5s failed once in 13.
+- **Use `thumburl`, never `url` — and keep `thumbmime` in `iiprop`.** Originals are
+  multi-megabyte (the Gérard Austerlitz canvas is 4000x1983) and may be formats no browser
+  renders inline: Commons holds SVG maps and TIFF scans, the Library of Congress Gettysburg
+  troop maps among them. The thumbnailer renders both to PNG, so the mime allowlist tests
+  `thumbmime` rather than `mime`. **The trap, and it shipped once as a bug:** the API returns
+  `thumbmime` *only* if `iiprop` names it. Omit it and the check silently falls back to the
+  original's format, rejecting every SVG and TIFF — which kept SVG battle maps out entirely.
+  Worse, a unit-test fixture can supply a field the real request never asked for, so the test
+  passed while the live code could not do what it claimed. There is now a test asserting the
+  **request** contains `thumbmime`; keep it.
+- **Maps are first-class, and they crowd out.** `gsrsearch` uses `filetype:bitmap|drawing`
+  rather than `bitmap` alone, because many of the best battle maps are SVG; `drawing` was
+  measured not to readmit junk ("Brown Bess musket" returns the identical Smithsonian set
+  either way). Maps are abundant and rank highly — "Gettysburg battle map" comes back as
+  nothing but maps, "Battle of Austerlitz map" as six hourly situation maps — so both prompts
+  cap them: at most one map per section, and only for sections about ground, movement or
+  position. Note also that Commons holds the same map translated many times, each a separate
+  file (`map-alt3 cs.svg`, `Day3heb.png`, `Situation at 1800...-ar.png`), which de-duplication
+  by file id cannot merge; the pick prompt rejects language-tagged titles for that reason.
+
+Credits are **unlinked** on purpose: `countSources` counts every `[](...)` in the report, so a
+linked credit would inflate the source count with something that is not a source. Author plus
+licence in plain text still satisfies CC BY-SA, which the Bundesarchiv photographs genuinely
+require. Commons records an absent author as the string "Unknown source" and sometimes doubles
+a field by wrapping it in a span, so `metaField` collapses repeats and drops uninformative
+values rather than printing "Unknown source Unknown source" under a painting.
+
+`IMAGE_THUMB_WIDTH` is 1600 for the maps' sake: a painting reads fine at 960 scaled into the
+`renderHtml` body's ~1152px column (`max-width: 75rem` less the 1.5rem gutters), but a
+4950x5917 Gettysburg day map squeezed to 1152px has illegible troop labels. The widened body
+left 1600 with *less* headroom than it had, not more — it is now only ~1.4x the column, and
+below 2x on a retina display — so lowering it back toward 960 would now be visible. It is an
+upper *request*, not a guarantee — Commons rounds to its own thumbnail buckets (asking 1600 was
+observed to return 1920) and serves the original untouched when it is already smaller. The same
+widening means `MIN_IMAGE_LONG_EDGE` no longer implies a column-filling image: at 640 a picture
+now renders at a bit over half the column, since `max-width: 100%` scales down and never up.
+
+Images are hotlinked rather than downloaded. That is a deliberate first step and it is the one
+decision here in tension with `renderHtml`'s promise that the HTML "still reads offline" — if
+that promise starts mattering, the shape to reach for is markdown keeping the remote URL while
+`--html` inlines the bytes as `data:` URIs.
+
+**Everything about this pass is best-effort and cannot fail a run.** No illustratable section,
+no queries produced, a Commons outage, a malformed model response, an unreachable image: every
+path returns the unillustrated report. `illustrateReport` catches internally and
+`report_generator` catches again around the call, because that node is the last place a
+finished report can be lost.
 
 ### Tavily search pipeline (`src/tools/tavilySearch.ts`)
 

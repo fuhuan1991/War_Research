@@ -49,8 +49,15 @@ export const MAX_IMAGES_PER_SECTION = 2;
 // Note this is a quality floor, not a junk filter. `gsrnamespace=6` plus `filetype:bitmap`
 // returned zero logos, icons, sprites or avatars across all 112 results, so there is no junk
 // to exclude and the cut should stay gentle — rejecting bad *subjects* is the picking model's
-// job, not this constant's. For reference, reportOutput's HTML body is 46rem (~736px) wide,
-// so anything clearing 640 renders at near-full column width anyway.
+// job, not this constant's.
+//
+// For reference, reportOutput's HTML body is 75rem (~1200px), leaving a ~1152px content column
+// after the 1.5rem gutters. An image at this floor therefore renders at a bit over half the
+// column — `max-width: 100%` scales down, never up — where in the old 736px body it filled
+// nearly all of it. The floor stays 640 regardless, because it is a *quality* cut measured
+// against what Commons actually returns and not a fit-the-column cut: raising it to match the
+// wider column would reject exactly the tall museum shots and Bundesarchiv photographs the
+// note above argues for.
 export const MIN_IMAGE_LONG_EDGE = 640;
 
 // How many candidates to fetch per query. Over-fetching is what makes the picking model worth
@@ -67,12 +74,16 @@ export const IMAGE_CANDIDATES_PER_QUERY = 8;
 // note on it in commonsImages.ts.)
 //
 // 1600 rather than 960 because of maps. A painting reads fine at 960 scaled into the HTML's
-// 46rem (~736px) column, but battle maps are detail-dense and enormous — measured at
+// 75rem body (~1152px column), but battle maps are detail-dense and enormous — measured at
 // 4950x5917 for the Gettysburg day maps and 3752x2896 for the Austerlitz hourly situation
 // maps — and their troop labels are illegible once a 4950px original has been squeezed to
-// 736px. The larger thumbnail costs nothing in storage, since images are hotlinked, and
+// 1152px. The larger thumbnail costs nothing in storage, since images are hotlinked, and
 // `max-width: 100%` still fits it to the column; it just leaves something to see when the
 // reader zooms the page or opens the image on its own.
+//
+// Note the widened body left 1600 with *less* headroom than it had, not more: it is now only
+// ~1.4x the column, and below 2x on a retina display. The argument for 1600 over 960 got
+// tighter rather than looser, so lowering it back toward 960 would now be visible.
 export const IMAGE_THUMB_WIDTH = 1600;
 
 // Minimum spacing between Commons API requests.

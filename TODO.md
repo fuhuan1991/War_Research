@@ -33,9 +33,8 @@ Living backlog of action items for the War Research project. Add items here as t
 ### Hygiene
 
 - [x] **Add a README** — `README.md` covers what the project does and does not do, the `.env` keys and first run, the CLI walkthrough and flags, a simplified mermaid graph (the annotated one stays in `docs/question-flow.md`), Studio and the trace harnesses, and the layout. Note `reports/` is gitignored, so it quotes a run rather than linking a sample report; commit one if a linked example is wanted.
-- [ ] **Add CI** — tests pass and cost nothing (`tests/unit` is fully mocked), but nothing runs them automatically. Keep `tests/eval` out of CI; it makes real paid API calls.
-- [ ] **Remove `console.log` from the production path** (`tavilySearch.ts:110-119`) or put it behind a verbosity flag — fine in Studio, noise in a deployed server.
-- [ ] **Add `engines` / `.nvmrc`** — `langgraph.json` pins `node_version: "20"` but `package.json` declares nothing.
+- [x] **Add CI** — tests pass and cost nothing (`tests/unit` is fully mocked), but nothing runs them automatically. Keep `tests/eval` out of CI; it makes real paid API calls.
+- [x] **Add `engines` / `.nvmrc`** — `langgraph.json` pins `node_version: "20"` but `package.json` declares nothing.
 - [ ] **Drop `ANTHROPIC_API_KEY` from the local `.env` / `.env.example`** (or start using it) — every model currently routes through `ChatOpenAI` in `src/model.ts`. Both files are gitignored, so this is local hygiene plus the key list in `CLAUDE.md`.
 - [ ] **Add a linter/formatter** — none configured.
 - [x] **Add a LICENSE** — MIT, matching the dependency stack (LangChain/LangGraph, Tavily SDK and zod are all MIT). `package.json` declares `"license": "MIT"` to match. The README notes that it covers the code only: report text is model-synthesised from third-party sources and the images are hotlinked from Wikimedia Commons under their own licences, some CC BY-SA.

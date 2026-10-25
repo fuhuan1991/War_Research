@@ -1,7 +1,8 @@
 # War Research
 
+[![CI](https://github.com/fuhuan1991/War_Research/actions/workflows/ci.yml/badge.svg)](https://github.com/fuhuan1991/War_Research/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Node 20](https://img.shields.io/badge/node-20-5FA04E?logo=node.js&logoColor=white)
+![Node 22+](https://img.shields.io/badge/node-22%2B-5FA04E?logo=node.js&logoColor=white)
 [![Built with LangGraph.js](https://img.shields.io/badge/built%20with-LangGraph.js-1C3C3C)](https://langchain-ai.github.io/langgraphjs/)
 
 **War Research** is a deep research agent for military history. Name a real battle, a
@@ -139,7 +140,7 @@ compress one sub-topic each. More in [Inside the pipeline](#inside-the-pipeline)
 
 ## Quick start
 
-Requires **Node 20** (pinned in `langgraph.json`) and keys for OpenAI and Tavily.
+Requires **Node 22+** and keys for OpenAI and Tavily.
 
 **1. Install**
 

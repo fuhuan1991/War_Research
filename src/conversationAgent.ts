@@ -17,6 +17,7 @@ import { scopeTopicPrompt, scopeTopicSystemPrompt } from "./prompts/scopeTopicPr
 import { proposePlanPrompt } from "./prompts/proposePlanPrompt.js";
 import { classifyFeedbackPrompt } from "./prompts/classifyFeedbackPrompt.js";
 import { reportGeneratorPrompt } from "./prompts/reportGeneratorPrompt.js";
+import { illustrateReport } from "./images/illustrate.js";
 import { supervisorAgent } from "./supervisorAgent.js";
 import { fullModel, miniModel } from "./model.js";
 import { MAX_CLARIFY_ROUNDS, MAX_CONFIRM_ROUNDS, MAX_ANGLES_PER_PLAN } from "./config.js";
@@ -295,7 +296,17 @@ export const dispatchResearchNode = async (state: ConversationStateType) => {
   };
 };
 
-export const makeReportGenerator = (llm: { invoke: (messages: HumanMessage[]) => Promise<AIMessage> }) =>
+/**
+ * Adds pictures to a finished report. `illustrateReport` is the real one; a test injects a
+ * stub. By contract it returns the report unchanged rather than throwing — see
+ * `src/images/illustrate.ts`.
+ */
+export type IllustrateFn = (report: string, notes: string[]) => Promise<string>;
+
+export const makeReportGenerator = (
+  llm: { invoke: (messages: HumanMessage[]) => Promise<AIMessage> },
+  illustrate: IllustrateFn = illustrateReport,
+) =>
   async (state: ConversationStateType) => {
     const findings = state.notes.join("\n");
 
@@ -308,9 +319,30 @@ export const makeReportGenerator = (llm: { invoke: (messages: HumanMessage[]) =>
     console.log("Start generating final report");
     const response = await llm.invoke([new HumanMessage(prompt)]) as AIMessage;
     console.log("Final report completed");
+
+    // Illustration runs here, inside this node and after the report text exists, rather than
+    // in a node of its own. Two reasons:
+    //   - It needs the report's real `##` headings. The report prompt lets the model structure
+    //     its sections however it likes, so the headings cannot be predicted from `plan`.
+    //   - A new node would have to be mirrored in the hand-assembled graph inside
+    //     tests/eval/conversationAgent.eval.test.ts, which nothing guards against drift.
+    // The images go into `final_report` as well as `messages`, so Studio and any future UI
+    // get the illustrated report and not a bare one.
+    const report = response.content as string;
+
+    // Belt and braces. `illustrateReport` is contracted not to throw, but this node is the
+    // last place a finished report can be lost, and it cost a full research run to produce —
+    // so a decoration bug is caught here too rather than trusted not to happen.
+    let illustrated = report;
+    try {
+      illustrated = await illustrate(report, state.notes);
+    } catch (err) {
+      console.warn(`Illustration threw, keeping the unillustrated report: ${(err as Error).message}`);
+    }
+
     return {
-      final_report: response.content as string,
-      messages: [new AIMessage("Here is the final report:\n\n" + response.content)],
+      final_report: illustrated,
+      messages: [new AIMessage("Here is the final report:\n\n" + illustrated)],
     };
   };
 

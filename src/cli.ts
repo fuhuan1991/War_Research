@@ -39,6 +39,7 @@ import {
   reportBaseName,
   stripCodeFence,
 } from "./reportOutput.js";
+import { countImages } from "./images/insertImages.js";
 
 // The graph is imported dynamically (see main) so the API-key check runs first: model.ts
 // constructs its ChatOpenAI instances at module scope and throws on a missing key, which
@@ -292,6 +293,7 @@ const clip = (text: string, room: number) =>
 const printOutline = (report: string, mdFile: string, htmlFile?: string) => {
   const { title, sections } = extractOutline(report);
   const sources = countSources(report);
+  const images = countImages(report);
   const width = process.stdout.columns ?? FALLBACK_WIDTH;
 
   out();
@@ -310,7 +312,12 @@ const printOutline = (report: string, mdFile: string, htmlFile?: string) => {
   }
 
   out();
-  out(dim(`  ${countWords(report).toLocaleString("en-US")} words · ${sources} source${sources === 1 ? "" : "s"}`));
+  // The image count is omitted rather than shown as zero: illustration is best-effort, and a
+  // report of a subject with no usable imagery is not a report with something missing.
+  out(dim(
+    `  ${countWords(report).toLocaleString("en-US")} words · ${sources} source${sources === 1 ? "" : "s"}` +
+    (images ? ` · ${images} image${images === 1 ? "" : "s"}` : "")
+  ));
   out(`  ${relative(process.cwd(), mdFile)}`);
   if (htmlFile) out(`  ${relative(process.cwd(), htmlFile)}`);
   out();

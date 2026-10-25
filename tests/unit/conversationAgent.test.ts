@@ -1,8 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { Command } from "@langchain/langgraph";
-import { HumanMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
 
-import { makeProposePlanNode, type ProposePlanModel } from "../../src/conversationAgent.js";
+import {
+  makeProposePlanNode,
+  makeReportGenerator,
+  type IllustrateFn,
+  type ProposePlanModel,
+} from "../../src/conversationAgent.js";
 import { ConversationStateType } from "../../src/states/conversationState.js";
 import { CONFIRM_QUESTION } from "../../src/plan.js";
 import { MAX_ANGLES_PER_PLAN, MAX_CONFIRM_ROUNDS } from "../../src/config.js";
@@ -117,5 +122,79 @@ describe("propose_plan: routing", () => {
     );
 
     expect(gotoOf(command)).toContain("confirm_plan");
+  });
+});
+
+// =============================================================================
+// report_generator, with both its model and its illustration pass injected.
+//
+// The illustration pass itself is covered in tests/unit/illustrate.test.ts; what matters
+// here is the wiring: that the ILLUSTRATED text is what reaches state, and that a failure
+// in the decorations cannot cost the user a report that took a full research run to earn.
+// =============================================================================
+
+/** Minimal report model: returns a canned report body as an AI message. */
+const fakeReportModel = (body: string) => ({
+  invoke: async () => new AIMessage(body) as AIMessage,
+});
+
+const REPORT_BODY = "# Austerlitz\n\n## The Approach March\n\nProse.";
+
+const reportState = (overrides: Partial<ConversationStateType> = {}) =>
+  ({
+    messages: [],
+    notes: ["a finding", "another finding"],
+    plan: { final_topic: "Austerlitz", angles: ["The approach march"] },
+    ...overrides,
+  }) as unknown as ConversationStateType;
+
+describe("report_generator", () => {
+  it("writes the ILLUSTRATED report to both final_report and messages", async () => {
+    const illustrate: IllustrateFn = async (report) => `${report}\n\n![a](https://x/1.jpg)`;
+    const node = makeReportGenerator(fakeReportModel(REPORT_BODY), illustrate);
+
+    const update = await node(reportState());
+
+    expect(update.final_report).toContain("![a](https://x/1.jpg)");
+    expect(String(update.messages[0].content)).toContain("![a](https://x/1.jpg)");
+  });
+
+  it("hands the illustration pass the report text and the research notes", async () => {
+    // The notes are what ground an image query in what the research actually found, rather
+    // than in the words of the approved angle.
+    const seen: { report?: string; notes?: string[] } = {};
+    const illustrate: IllustrateFn = async (report, notes) => {
+      seen.report = report;
+      seen.notes = notes;
+      return report;
+    };
+
+    await makeReportGenerator(fakeReportModel(REPORT_BODY), illustrate)(reportState());
+
+    expect(seen.report).toBe(REPORT_BODY);
+    expect(seen.notes).toEqual(["a finding", "another finding"]);
+  });
+
+  it("keeps the unillustrated report when the illustration pass returns it unchanged", async () => {
+    const node = makeReportGenerator(fakeReportModel(REPORT_BODY), async (report) => report);
+    expect((await node(reportState())).final_report).toBe(REPORT_BODY);
+  });
+
+  it("keeps the report when the illustration pass throws", async () => {
+    // illustrateReport is contracted not to throw; this pins the node's own guard, because
+    // report_generator is the last place a finished report can be lost.
+    const node = makeReportGenerator(fakeReportModel(REPORT_BODY), async () => {
+      throw new Error("Commons exploded");
+    });
+
+    const update = await node(reportState());
+
+    expect(update.final_report).toBe(REPORT_BODY);
+    expect(String(update.messages[0].content)).toContain(REPORT_BODY);
+  });
+
+  it("still produces a report when there is no plan to render into the prompt", async () => {
+    const node = makeReportGenerator(fakeReportModel(REPORT_BODY), async (report) => report);
+    expect((await node(reportState({ plan: null }))).final_report).toBe(REPORT_BODY);
   });
 });

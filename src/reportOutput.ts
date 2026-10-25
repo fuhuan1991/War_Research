@@ -368,7 +368,7 @@ const STYLE = `
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0 auto; padding: 4rem 1.5rem 6rem; max-width: 46rem;
+    margin: 0 auto; padding: 4rem 1.5rem 6rem; max-width: 75rem;
     font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     color: var(--ink); background: var(--bg); text-rendering: optimizeLegibility;
   }
@@ -384,6 +384,13 @@ const STYLE = `
   blockquote { margin: 1.5rem 0; padding-left: 1rem; border-left: 3px solid var(--rule); color: var(--muted); }
   hr { margin: 2.5rem 0; border: 0; border-top: 1px solid var(--rule); }
   img { max-width: 100%; height: auto; }
+  /* An image block from src/images/insertImages.ts renders as <p><img></p> followed by
+     <p><em>credit</em></p>. These two rules make that second paragraph read as a caption
+     without needing <figure>/<figcaption>, which renderBlocks cannot emit. The
+     "has one em child" test is what keeps an ordinary paragraph after an uncredited image
+     from being styled as a caption. */
+  p:has(> img) { margin-bottom: 0.4rem; }
+  p:has(> img) + p:has(> em) { margin-top: 0; font-size: 0.85rem; line-height: 1.5; color: var(--muted); }
   footer { margin-top: 4rem; padding-top: 1rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.85rem; }
   @media print {
     body { max-width: none; padding: 0; color: #000; background: #fff; }

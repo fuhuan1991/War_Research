@@ -63,7 +63,7 @@ export type Tier = "full" | "mini" | "nano";
 export const PRICES: Record<Tier, { in: number; out: number }> = {
   full: { in: 2.0, out: 8.0 }, // gpt-4.1
   mini: { in: 0.4, out: 1.6 }, // gpt-4.1-mini
-  nano: { in: 0.1, out: 0.4 }, // gpt-4.1-nano
+  nano: { in: 0.2, out: 1.25 }, // gpt-5.4-nano
 };
 
 export type CallRecord = {
